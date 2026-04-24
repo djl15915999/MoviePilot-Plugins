@@ -18,6 +18,25 @@ from app.plugins.hentaimetahub.models import AnimeMetadata, AnimeSearchItem
 from app.plugins.hentaimetahub.sources import AnimeSource
 
 
+def _preferred_title(title: Dict[str, Any]) -> str:
+    """成人动画检索优先使用日文原名，便于后续刮削匹配。"""
+    return title.get("native") or title.get("romaji") or title.get("english") or ""
+
+
+def _title_aliases(title: Dict[str, Any], synonyms: Optional[List[str]] = None) -> List[str]:
+    names: List[str] = []
+    for name in [
+        *(synonyms or []),
+        title.get("native"),
+        title.get("romaji"),
+        title.get("english"),
+    ]:
+        if not name or name in names:
+            continue
+        names.append(name)
+    return names
+
+
 SEARCH_QUERY = """
 query ($search: String, $isAdult: Boolean, $perPage: Int) {
   Page(page: 1, perPage: $perPage) {
@@ -164,7 +183,7 @@ class AniListSource(AnimeSource):
                 AnimeSearchItem(
                     source=self.name,
                     source_id=str(m.get("id")),
-                    title=title.get("romaji") or title.get("english") or title.get("native") or "",
+                    title=_preferred_title(title),
                     title_en=title.get("english"),
                     title_romaji=title.get("romaji"),
                     title_native=title.get("native"),
@@ -237,10 +256,11 @@ class AniListSource(AnimeSource):
             source_id=str(m.get("id")),
             sources=["anilist"],
             source_ids={"anilist": str(m.get("id"))},
-            title=title.get("romaji") or title.get("english") or title.get("native") or "",
+            title=_preferred_title(title),
             title_en=title.get("english"),
             title_romaji=title.get("romaji"),
             title_native=title.get("native"),
+            synonyms=_title_aliases(title),
             format=m.get("format"),
             episodes=m.get("episodes"),
             duration=m.get("duration"),
@@ -300,11 +320,11 @@ class AniListSource(AnimeSource):
             source_id=str(m.get("id")),
             sources=[self.name],
             source_ids={self.name: str(m.get("id"))},
-            title=title.get("romaji") or title.get("english") or title.get("native") or "",
+            title=_preferred_title(title),
             title_en=title.get("english"),
             title_romaji=title.get("romaji"),
             title_native=title.get("native"),
-            synonyms=list(m.get("synonyms") or []),
+            synonyms=_title_aliases(title, list(m.get("synonyms") or [])),
             format=m.get("format"),
             status=m.get("status"),
             episodes=m.get("episodes"),

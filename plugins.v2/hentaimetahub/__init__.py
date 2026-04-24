@@ -55,7 +55,7 @@ class HentaiMetaHub(_PluginBase):
     # 插件图标
     plugin_icon = "Moviepilot_A.png"
     # 插件版本
-    plugin_version = "1.0.7"
+    plugin_version = "1.0.8"
     # 插件作者
     plugin_author = "dong"
     # 作者主页
@@ -435,7 +435,7 @@ class HentaiMetaHub(_PluginBase):
             year = str(meta.season_year)
         elif meta.start_date and meta.start_date[:4].isdigit():
             year = meta.start_date[:4]
-        title = meta.title_cn or meta.title or meta.title_en or meta.title_romaji or meta.title_native or ""
+        title = HentaiMetaHub._display_title(meta)
         mtype = "电影" if (meta.format or "").upper() == "MOVIE" else "电视剧"
         return schemas.MediaInfo(
             type=mtype,
@@ -459,7 +459,7 @@ class HentaiMetaHub(_PluginBase):
             year = str(meta.season_year)
         elif meta.start_date and meta.start_date[:4].isdigit():
             year = meta.start_date[:4]
-        title = meta.title_cn or meta.title or meta.title_en or meta.title_romaji or meta.title_native or ""
+        title = HentaiMetaHub._display_title(meta)
         mtype = "电影" if (meta.format or "").upper() == "MOVIE" else "电视剧"
         genres = [{"id": i, "name": name} for i, name in enumerate([*meta.genres, *meta.tags]) if name]
         studios = [{"id": i, "name": name} for i, name in enumerate(meta.studios or []) if name]
@@ -492,8 +492,8 @@ class HentaiMetaHub(_PluginBase):
             "title_year": f"{title} ({year})" if year else title,
             "mediaid_prefix": mediaid_prefix,
             "media_id": str(media_id),
-            "original_title": meta.title_native or meta.title_en or meta.title_romaji or title,
-            "original_name": meta.title_native or meta.title_en or meta.title_romaji or title,
+            "original_title": meta.title_native or title,
+            "original_name": meta.title_native or title,
             "release_date": meta.start_date,
             "first_air_date": meta.start_date,
             "last_air_date": meta.end_date,
@@ -504,7 +504,7 @@ class HentaiMetaHub(_PluginBase):
             "overview": meta.description,
             "genres": genres,
             "genre_ids": [item["id"] for item in genres],
-            "names": [name for name in meta.synonyms if name],
+            "names": HentaiMetaHub._alias_names(meta),
             "detail_link": detail_link,
             "homepage": detail_link,
             "adult": meta.is_adult,
@@ -527,7 +527,27 @@ class HentaiMetaHub(_PluginBase):
 
     @staticmethod
     def _meta_title(meta: AnimeMetadata) -> str:
-        return meta.title_cn or meta.title or meta.title_en or meta.title_romaji or meta.title_native or ""
+        return HentaiMetaHub._display_title(meta)
+
+    @staticmethod
+    def _display_title(meta: AnimeMetadata) -> str:
+        return meta.title_native or meta.title or meta.title_cn or meta.title_romaji or meta.title_en or ""
+
+    @staticmethod
+    def _alias_names(meta: AnimeMetadata) -> List[str]:
+        names: List[str] = []
+        for name in [
+            meta.title_native,
+            meta.title,
+            meta.title_cn,
+            meta.title_romaji,
+            meta.title_en,
+            *(meta.synonyms or []),
+        ]:
+            if not name or name in names:
+                continue
+            names.append(name)
+        return names
 
     @staticmethod
     def _meta_media_type(meta: AnimeMetadata) -> str:

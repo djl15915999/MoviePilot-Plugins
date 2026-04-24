@@ -682,11 +682,12 @@
     "name": "成人动画元数据聚合",
     "description": "聚合 AniDB、AniList、Bangumi 的成人动画（里番）元数据，不涉及任何资源下载。",
     "labels": "元数据,数据源,动画",
-    "version": "1.0.7",
+    "version": "1.0.8",
     "icon": "Moviepilot_A.png",
     "author": "dong",
     "level": 1,
     "history": {
+      "v1.0.8": "成人动画列表和详情优先使用日文原名，并保留英文、罗马音、中文名为别名以提升检索和刮削匹配",
       "v1.0.7": "MRC 返回 AniList 当前源完整 MediaInfo，配合 MoviePilot 自定义源详情补丁可不依赖 TMDB/豆瓣直接展示",
       "v1.0.6": "修复 AniList 成人向条目详情页未识别：MRC 统一走 TMDB 转换，常规识别失败后使用 include_adult 搜索并严格匹配标题/年份",
       "v1.0.5": "修复探索详情页 TMDB id=0 导致进入失败的问题：MRC 仅在映射到真实 TMDB ID 时返回非空 media_dict，否则交给标题兜底",

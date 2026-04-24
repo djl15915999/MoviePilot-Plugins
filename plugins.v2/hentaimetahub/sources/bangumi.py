@@ -90,7 +90,7 @@ class BangumiSource(AnimeSource):
                 AnimeSearchItem(
                     source=self.name,
                     source_id=str(it.get("id")),
-                    title=it.get("name_cn") or it.get("name") or "",
+                    title=it.get("name") or it.get("name_cn") or "",
                     title_native=it.get("name"),
                     cover=images.get("large") or images.get("common"),
                     year=year,
@@ -170,7 +170,7 @@ class BangumiSource(AnimeSource):
             source_id=str(d.get("id")),
             sources=[self.name],
             source_ids={self.name: str(d.get("id"))},
-            title=d.get("name_cn") or d.get("name") or "",
+            title=d.get("name") or d.get("name_cn") or "",
             title_cn=d.get("name_cn") or None,
             title_native=d.get("name"),
             synonyms=[s for s in synonyms if s],

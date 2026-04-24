@@ -185,26 +185,41 @@ class AniDBSource(AnimeSource):
         kw = keyword.lower()
         hits: List[Dict[str, Any]] = []
         for entry in entries:
-            match_title: Optional[Dict[str, Any]] = None
+            matched = False
             for t in entry["titles"]:
                 if kw in (t["text"] or "").lower():
-                    match_title = t
+                    matched = True
                     break
-            if not match_title:
+            if not matched:
                 continue
-            hits.append({"aid": entry["aid"], "title": match_title})
+            hits.append(entry)
             if len(hits) >= limit:
                 break
         out: List[AnimeSearchItem] = []
         for h in hits:
+            title_en = title_jp = title_romaji = title_main = None
+            for t in h["titles"]:
+                lang = t.get("lang")
+                type_ = t.get("type")
+                text = (t.get("text") or "").strip()
+                if not text:
+                    continue
+                if type_ == "main" and not title_main:
+                    title_main = text
+                if lang == "en" and not title_en:
+                    title_en = text
+                if lang == "ja" and not title_jp:
+                    title_jp = text
+                if lang == "x-jat" and not title_romaji:
+                    title_romaji = text
             out.append(
                 AnimeSearchItem(
                     source=self.name,
                     source_id=str(h["aid"]),
-                    title=h["title"]["text"],
-                    title_en=h["title"]["text"] if h["title"]["lang"] == "en" else None,
-                    title_romaji=h["title"]["text"] if h["title"]["lang"] == "x-jat" else None,
-                    title_native=h["title"]["text"] if h["title"]["lang"] == "ja" else None,
+                    title=title_jp or title_main or title_romaji or title_en or "",
+                    title_en=title_en,
+                    title_romaji=title_romaji,
+                    title_native=title_jp,
                     is_adult=True,
                     url=f"https://anidb.net/anime/{h['aid']}",
                 )
@@ -310,7 +325,7 @@ class AniDBSource(AnimeSource):
             source_id=str(aid),
             sources=[self.name],
             source_ids={self.name: str(aid)},
-            title=title_main or title_en or title_romaji or "",
+            title=title_jp or title_main or title_romaji or title_en or "",
             title_en=title_en,
             title_romaji=title_romaji,
             title_native=title_jp,
