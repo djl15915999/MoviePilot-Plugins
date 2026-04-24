@@ -25,6 +25,8 @@ except ImportError:
     MediaRecognizeConvertEventData = None  # type: ignore[assignment]
 
 _MRC_EVENT = getattr(ChainEventType, "MediaRecognizeConvert", None)
+_NAME_RECOGNIZE_EVENT = getattr(EventType, "NameRecognize", None)
+_NAME_RECOGNIZE_RESULT_EVENT = getattr(EventType, "NameRecognizeResult", None)
 
 
 def _maybe_register(event_type):
@@ -53,7 +55,7 @@ class HentaiMetaHub(_PluginBase):
     # 插件图标
     plugin_icon = "Moviepilot_A.png"
     # 插件版本
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     # 插件作者
     plugin_author = "dong"
     # 作者主页
@@ -624,7 +626,7 @@ class HentaiMetaHub(_PluginBase):
 
     # ===== NameRecognize =====
 
-    @eventmanager.register(EventType.NameRecognize)
+    @_maybe_register(_NAME_RECOGNIZE_EVENT)
     def name_recognize(self, event: Event):
         if not self._enabled or not self._as_recognize:
             return
@@ -650,10 +652,12 @@ class HentaiMetaHub(_PluginBase):
         if not meta or not (meta.title or meta.title_cn):
             self._send_empty(title)
             return
-        from app.core.event import eventmanager as em
         logger.info("[HentaiMetaHub] 识别命中 %s -> %s", title, meta.title_cn or meta.title)
+        if _NAME_RECOGNIZE_RESULT_EVENT is None:
+            return
+        from app.core.event import eventmanager as em
         em.send_event(
-            EventType.NameRecognizeResult,
+            _NAME_RECOGNIZE_RESULT_EVENT,
             {
                 "title": title,
                 "name": meta.title_cn or meta.title,
@@ -665,8 +669,10 @@ class HentaiMetaHub(_PluginBase):
 
     @staticmethod
     def _send_empty(title: str) -> None:
+        if _NAME_RECOGNIZE_RESULT_EVENT is None:
+            return
         from app.core.event import eventmanager as em
-        em.send_event(EventType.NameRecognizeResult, {"title": title})
+        em.send_event(_NAME_RECOGNIZE_RESULT_EVENT, {"title": title})
 
     def stop_service(self):
         self._merger = None
