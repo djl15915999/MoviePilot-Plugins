@@ -60,7 +60,7 @@ class JavMetaHub(_PluginBase):
     # 插件图标
     plugin_icon = "Moviepilot_A.png"
     # 插件版本
-    plugin_version = "1.0.3"
+    plugin_version = "1.0.4"
     # 插件作者
     plugin_author = "dong"
     # 作者主页
@@ -622,11 +622,21 @@ class JavMetaHub(_PluginBase):
         if not mediaid.startswith("jav:"):
             return
         code = mediaid.split(":", 1)[1]
-        meta = self._merger.fetch(code, strategy=self._strategy) if self._merger else None
-        if not meta:
-            # 未命中时返回空 dict，避免主程序继续识别
+        if not self._merger:
+            logger.warning("[JavMetaHub] MRC 中止：_merger 未初始化")
             event_data.media_dict = {}
             return
+        logger.info("[JavMetaHub] MRC 开始抓取 code=%s strategy=%s", code, self._strategy)
+        meta = None
+        try:
+            meta = self._merger.fetch(code, strategy=self._strategy)
+        except Exception as err:  # pragma: no cover
+            logger.warning("[JavMetaHub] MRC 抓取异常: %s", err)
+        if not meta:
+            logger.warning("[JavMetaHub] MRC 抓取结果为空 code=%s", code)
+            event_data.media_dict = {}
+            return
+        logger.info("[JavMetaHub] MRC 命中 code=%s title=%r", code, meta.title)
         year = (meta.release_date or "")[:4]
         event_data.media_dict = {
             "id": 0,

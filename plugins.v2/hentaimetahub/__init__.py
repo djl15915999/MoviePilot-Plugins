@@ -55,7 +55,7 @@ class HentaiMetaHub(_PluginBase):
     # 插件图标
     plugin_icon = "Moviepilot_A.png"
     # 插件版本
-    plugin_version = "1.0.3"
+    plugin_version = "1.0.4"
     # 插件作者
     plugin_author = "dong"
     # 作者主页
@@ -597,21 +597,32 @@ class HentaiMetaHub(_PluginBase):
         if not mediaid.startswith("anilist:"):
             return
         source_id = mediaid.split(":", 1)[1]
+        if not self._merger:
+            logger.warning("[HentaiMetaHub] MRC 中止：_merger 未初始化，请检查插件是否启用且至少勾选一个源")
+            event_data.media_dict = {}
+            return
+        active_names = [s.name for s in getattr(self._merger, "active_sources", [])]
+        logger.info("[HentaiMetaHub] MRC 开始抓取 source=anilist id=%s 可用源=%s strategy=%s",
+                    source_id, active_names, self._strategy)
         meta = None
-        if self._merger:
-            try:
-                meta = self._merger.fetch(
-                    source="anilist",
-                    source_id=source_id,
-                    strategy=self._strategy,
-                )
-            except Exception as err:  # pragma: no cover
-                logger.warning("[HentaiMetaHub] MediaRecognizeConvert 抓取异常: %s", err)
+        try:
+            meta = self._merger.fetch(
+                source="anilist",
+                source_id=source_id,
+                strategy=self._strategy,
+            )
+        except Exception as err:  # pragma: no cover
+            logger.warning("[HentaiMetaHub] MRC 抓取异常: %s", err)
         if not meta:
+            logger.warning("[HentaiMetaHub] MRC 抓取结果为空 source=anilist id=%s（检查 AniList 是否启用、网络/代理、该 ID 是否存在）",
+                           source_id)
             event_data.media_dict = {}
             return
         year = str(meta.season_year) if meta.season_year else (meta.start_date or "")[:4]
         title = meta.title_cn or meta.title or meta.title_en or meta.title_romaji or ""
+        media_type = "movie" if (meta.format or "").upper() == "MOVIE" else "tv"
+        logger.info("[HentaiMetaHub] MRC 命中 id=%s title=%r year=%s type=%s",
+                    source_id, title, year, media_type)
         event_data.media_dict = {
             "id": 0,
             "name": title,
@@ -625,7 +636,7 @@ class HentaiMetaHub(_PluginBase):
             "release_date": meta.start_date,
             "vote_average": meta.rating,
             "genres": [{"id": i, "name": g} for i, g in enumerate(meta.genres)],
-            "media_type": "movie" if (meta.format or "").upper() == "MOVIE" else "tv",
+            "media_type": media_type,
             "year": year,
             "number_of_episodes": meta.episodes,
         }
