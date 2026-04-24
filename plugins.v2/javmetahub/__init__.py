@@ -27,6 +27,7 @@ except ImportError:
     MediaRecognizeConvertEventData = None  # type: ignore[assignment]
 
 _MRC_EVENT = getattr(ChainEventType, "MediaRecognizeConvert", None)
+_DISCOVER_EVENT = getattr(ChainEventType, "DiscoverSource", None)
 _NAME_RECOGNIZE_EVENT = getattr(EventType, "NameRecognize", None)
 _NAME_RECOGNIZE_RESULT_EVENT = getattr(EventType, "NameRecognizeResult", None)
 
@@ -88,6 +89,7 @@ class JavMetaHub(_PluginBase):
 
     def init_plugin(self, config: dict = None):
         config = config or {}
+        self._migrate_discover_config(config)
         self._enabled = bool(config.get("enabled"))
         self._proxy = bool(config.get("proxy"))
         self._as_discover_source = bool(config.get("as_discover_source", True))
@@ -120,6 +122,26 @@ class JavMetaHub(_PluginBase):
         }
 
         self._merger = self._build_merger()
+
+    def _migrate_discover_config(self, config: Dict[str, Any]) -> None:
+        """把旧版本保存下来的探索页默认关闭配置迁移为开启。"""
+        if not config or config.get("discover_source_migrated_v105"):
+            return
+        changed = False
+        if config.get("as_discover_source") is not True:
+            config["as_discover_source"] = True
+            changed = True
+        if config.get("fanza_enabled") is not True:
+            config["fanza_enabled"] = True
+            changed = True
+        config["discover_source_migrated_v105"] = True
+        changed = True
+        if changed:
+            try:
+                self.update_config(config=config)
+                logger.info("[JavMetaHub] 已自动迁移旧配置：开启探索页注入与 FANZA 数据源")
+            except Exception as err:  # pragma: no cover
+                logger.warning("[JavMetaHub] 迁移探索页配置失败: %s", err)
 
     def _build_merger(self) -> JavMerger:
         sources: List[JavSource] = [
@@ -292,6 +314,7 @@ class JavMetaHub(_PluginBase):
             "enabled": False,
             "proxy": False,
             "as_discover_source": True,
+            "discover_source_migrated_v105": True,
             "as_recognize": False,
             "strategy": "merge",
             "fanza_enabled": True,
@@ -479,18 +502,26 @@ class JavMetaHub(_PluginBase):
             runtime=meta.duration,
         )
 
-    @eventmanager.register(ChainEventType.DiscoverSource)
+    @_maybe_register(_DISCOVER_EVENT)
     def discover_source(self, event: Event):
         if not self._enabled or not self._as_discover_source:
+            logger.debug(
+                "[JavMetaHub] DiscoverSource 跳过 enabled=%s as_discover_source=%s",
+                self._enabled, self._as_discover_source,
+            )
             return
         source = FanzaSource(self._fanza_cfg, proxy=self._proxy)
         if not source.enabled:
+            logger.debug("[JavMetaHub] DiscoverSource 跳过：FANZA 数据源未启用")
             return
         if not source.is_available():
             logger.warning(
                 "[JavMetaHub] FANZA 未配置完整（api_id/affiliate_id），探索页 tab 仍注入但结果将为空，请在插件设置里补齐。"
             )
         event_data: DiscoverSourceEventData = event.event_data
+        if not event_data:
+            logger.debug("[JavMetaHub] DiscoverSource 跳过：event_data 为空")
+            return
         src = schemas.DiscoverMediaSource(
             name="FANZA",
             mediaid_prefix="jav",

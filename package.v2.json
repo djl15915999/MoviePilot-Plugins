@@ -670,7 +670,7 @@
     "author": "dong",
     "level": 1,
     "history": {
-      "v1.0.5": "修复探索页不出现 FANZA tab 的问题：不再因凭证未配置而跳过数据源注入；as_discover_source 默认值对齐为开启",
+      "v1.0.5": "修复探索页不出现 FANZA tab 的问题：自动迁移旧配置开启探索页注入，不再因凭证未配置而跳过数据源注入",
       "v1.0.4": "MRC 处理增加抓取过程日志（可用源、命中/为空），方便定位识别失败原因",
       "v1.0.3": "放宽 MediaRecognizeConvert 的 convert_type 过滤（兼容 tmdb/空值），增加事件入口日志便于排障",
       "v1.0.2": "兼容旧版 MoviePilot：当 EventType.NameRecognize 不存在时跳过注册，避免加载失败",
