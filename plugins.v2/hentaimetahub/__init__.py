@@ -55,7 +55,7 @@ class HentaiMetaHub(_PluginBase):
     # 插件图标
     plugin_icon = "Moviepilot_A.png"
     # 插件版本
-    plugin_version = "1.0.4"
+    plugin_version = "1.0.5"
     # 插件作者
     plugin_author = "dong"
     # 作者主页
@@ -452,6 +452,68 @@ class HentaiMetaHub(_PluginBase):
             runtime=meta.duration,
         )
 
+    @staticmethod
+    def _meta_year(meta: AnimeMetadata) -> str:
+        if meta.season_year:
+            return str(meta.season_year)
+        if meta.start_date and meta.start_date[:4].isdigit():
+            return meta.start_date[:4]
+        return ""
+
+    @staticmethod
+    def _meta_title(meta: AnimeMetadata) -> str:
+        return meta.title_cn or meta.title or meta.title_en or meta.title_romaji or meta.title_native or ""
+
+    @staticmethod
+    def _meta_media_type(meta: AnimeMetadata) -> str:
+        return "movie" if (meta.format or "").upper() == "MOVIE" else "tv"
+
+    def _resolve_tmdb_id(self, meta: AnimeMetadata, *, media_type: str, year: str = "") -> Optional[int]:
+        """尽量把 AniList 元数据映射到真实 TMDB ID，避免详情页拿 id=0 二次查询。"""
+        try:
+            from app.chain.media import MediaChain
+            from app.core.metainfo import MetaInfo
+            from app.schemas.types import MediaType
+        except Exception as err:  # pragma: no cover
+            logger.debug("[HentaiMetaHub] MRC TMDB 映射模块不可用: %s", err)
+            return None
+
+        mtype = MediaType.MOVIE if media_type == "movie" else MediaType.TV
+        candidates = [
+            meta.title_cn,
+            meta.title,
+            meta.title_en,
+            meta.title_romaji,
+            meta.title_native,
+            *(meta.synonyms or []),
+        ]
+        seen = set()
+        chain = MediaChain()
+        for raw_title in candidates:
+            title = (raw_title or "").strip()
+            title_key = title.lower()
+            if not title or title_key in seen:
+                continue
+            seen.add(title_key)
+            try:
+                meta_info = MetaInfo(title)
+                if year:
+                    meta_info.year = str(year)
+                meta_info.type = mtype
+                mediainfo = chain.recognize_media(meta=meta_info, mtype=mtype)
+            except Exception as err:  # pragma: no cover
+                logger.debug("[HentaiMetaHub] MRC TMDB 映射尝试失败 title=%r: %s", title, err)
+                continue
+            tmdb_id = getattr(mediainfo, "tmdb_id", None) if mediainfo else None
+            try:
+                tmdb_id = int(tmdb_id)
+            except (TypeError, ValueError):
+                continue
+            if tmdb_id > 0:
+                logger.info("[HentaiMetaHub] MRC TMDB 映射成功 title=%r tmdb_id=%s", title, tmdb_id)
+                return tmdb_id
+        return None
+
     @eventmanager.register(ChainEventType.DiscoverSource)
     def discover_source(self, event: Event):
         if not self._enabled or not self._as_discover_source:
@@ -618,13 +680,21 @@ class HentaiMetaHub(_PluginBase):
                            source_id)
             event_data.media_dict = {}
             return
-        year = str(meta.season_year) if meta.season_year else (meta.start_date or "")[:4]
-        title = meta.title_cn or meta.title or meta.title_en or meta.title_romaji or ""
-        media_type = "movie" if (meta.format or "").upper() == "MOVIE" else "tv"
+        year = self._meta_year(meta)
+        title = self._meta_title(meta)
+        media_type = self._meta_media_type(meta)
         logger.info("[HentaiMetaHub] MRC 命中 id=%s title=%r year=%s type=%s",
                     source_id, title, year, media_type)
+        tmdb_id = self._resolve_tmdb_id(meta, media_type=media_type, year=year)
+        if not tmdb_id:
+            logger.warning(
+                "[HentaiMetaHub] MRC 未找到 TMDB 映射 id=%s title=%r，返回空 media_dict 交给标题兜底，避免 TMDB id=0 详情页错误",
+                source_id, title,
+            )
+            event_data.media_dict = {}
+            return
         event_data.media_dict = {
-            "id": 0,
+            "id": tmdb_id,
             "name": title,
             "title": title,
             "original_title": meta.title_native or title,

@@ -60,7 +60,7 @@ class JavMetaHub(_PluginBase):
     # 插件图标
     plugin_icon = "Moviepilot_A.png"
     # 插件版本
-    plugin_version = "1.0.4"
+    plugin_version = "1.0.5"
     # 插件作者
     plugin_author = "dong"
     # 作者主页
@@ -291,7 +291,7 @@ class JavMetaHub(_PluginBase):
         defaults = {
             "enabled": False,
             "proxy": False,
-            "as_discover_source": False,
+            "as_discover_source": True,
             "as_recognize": False,
             "strategy": "merge",
             "fanza_enabled": True,
@@ -484,8 +484,12 @@ class JavMetaHub(_PluginBase):
         if not self._enabled or not self._as_discover_source:
             return
         source = FanzaSource(self._fanza_cfg, proxy=self._proxy)
-        if not source.is_available():
+        if not source.enabled:
             return
+        if not source.is_available():
+            logger.warning(
+                "[JavMetaHub] FANZA 未配置完整（api_id/affiliate_id），探索页 tab 仍注入但结果将为空，请在插件设置里补齐。"
+            )
         event_data: DiscoverSourceEventData = event.event_data
         src = schemas.DiscoverMediaSource(
             name="FANZA",
