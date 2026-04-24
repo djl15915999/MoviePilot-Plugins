@@ -60,7 +60,7 @@ class JavMetaHub(_PluginBase):
     # 插件图标
     plugin_icon = "Moviepilot_A.png"
     # 插件版本
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.3"
     # 插件作者
     plugin_author = "dong"
     # 作者主页
@@ -609,9 +609,15 @@ class JavMetaHub(_PluginBase):
             return
         event_data = event.event_data
         mediaid = getattr(event_data, "mediaid", None)
+        convert_type = getattr(event_data, "convert_type", None)
+        logger.info(
+            "[JavMetaHub] MRC 事件进入 mediaid=%r convert_type=%r",
+            mediaid, convert_type,
+        )
         if not event_data or not mediaid:
             return
-        if getattr(event_data, "convert_type", None) != "themoviedb":
+        if convert_type and convert_type not in ("themoviedb", "tmdb", ""):
+            logger.debug("[JavMetaHub] MRC 跳过：convert_type=%r 非 tmdb", convert_type)
             return
         if not mediaid.startswith("jav:"):
             return
