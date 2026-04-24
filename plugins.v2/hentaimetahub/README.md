@@ -57,4 +57,11 @@
 
 ## 更新日志
 
+- **v1.0.7** MRC 返回 AniList 当前源完整 `MediaInfo`，配合 MoviePilot 自定义源详情补丁可不依赖 TMDB/豆瓣直接展示。
+- **v1.0.6** 修复 AniList 成人向条目详情页未识别：MRC 统一走 TMDB 转换，常规识别失败后使用 `include_adult` 搜索并严格匹配标题/年份。
+- **v1.0.5** 修复探索详情页 TMDB id=0 导致进入失败的问题：MRC 仅在映射到真实 TMDB ID 时返回非空 `media_dict`，否则交给标题兜底。
+- **v1.0.4** MRC 处理增加抓取过程日志（可用源、命中/为空），方便定位识别失败原因。
+- **v1.0.3** 放宽 MediaRecognizeConvert 的 `convert_type` 过滤，增加事件入口日志便于排障。
+- **v1.0.2** 兼容旧版 MoviePilot：当 `EventType.NameRecognize` 不存在时跳过注册，避免加载失败。
+- **v1.0.1** 修正 `level` 与 `auth_level` 不一致导致插件在已安装列表中不可见的问题。
 - **v1.0.0** 首版：AniDB + AniList + Bangumi 三源聚合，Hub API，探索源，名称识别。

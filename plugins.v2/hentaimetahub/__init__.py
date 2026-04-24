@@ -55,7 +55,7 @@ class HentaiMetaHub(_PluginBase):
     # 插件图标
     plugin_icon = "Moviepilot_A.png"
     # 插件版本
-    plugin_version = "1.0.5"
+    plugin_version = "1.0.7"
     # 插件作者
     plugin_author = "dong"
     # 作者主页
@@ -453,6 +453,71 @@ class HentaiMetaHub(_PluginBase):
         )
 
     @staticmethod
+    def _to_detail_media_dict(meta: AnimeMetadata, *, mediaid_prefix: str, media_id: str) -> Dict[str, Any]:
+        year = None
+        if meta.season_year:
+            year = str(meta.season_year)
+        elif meta.start_date and meta.start_date[:4].isdigit():
+            year = meta.start_date[:4]
+        title = meta.title_cn or meta.title or meta.title_en or meta.title_romaji or meta.title_native or ""
+        mtype = "电影" if (meta.format or "").upper() == "MOVIE" else "电视剧"
+        genres = [{"id": i, "name": name} for i, name in enumerate([*meta.genres, *meta.tags]) if name]
+        studios = [{"id": i, "name": name} for i, name in enumerate(meta.studios or []) if name]
+        episode_run_time = [meta.duration] if meta.duration else []
+        season_info = []
+        if mtype == "电视剧":
+            season_info.append(
+                {
+                    "season_number": 1,
+                    "name": "第 1 季",
+                    "air_date": meta.start_date,
+                    "poster_path": meta.cover,
+                    "overview": meta.description,
+                    "vote_average": meta.rating,
+                    "episode_count": meta.episodes or 0,
+                }
+            )
+        detail_link = (
+            meta.urls.get("anilist")
+            or meta.urls.get(mediaid_prefix)
+            or next(iter(meta.urls.values()), None)
+        )
+        return {
+            "_custom_media_info": True,
+            "source": meta.source or mediaid_prefix,
+            "type": mtype,
+            "title": title,
+            "en_title": meta.title_en or meta.title_romaji,
+            "year": year,
+            "title_year": f"{title} ({year})" if year else title,
+            "mediaid_prefix": mediaid_prefix,
+            "media_id": str(media_id),
+            "original_title": meta.title_native or meta.title_en or meta.title_romaji or title,
+            "original_name": meta.title_native or meta.title_en or meta.title_romaji or title,
+            "release_date": meta.start_date,
+            "first_air_date": meta.start_date,
+            "last_air_date": meta.end_date,
+            "poster_path": meta.cover,
+            "backdrop_path": meta.banner or meta.cover,
+            "vote_average": meta.rating,
+            "vote_count": meta.rating_count or 0,
+            "overview": meta.description,
+            "genres": genres,
+            "genre_ids": [item["id"] for item in genres],
+            "names": [name for name in meta.synonyms if name],
+            "detail_link": detail_link,
+            "homepage": detail_link,
+            "adult": meta.is_adult,
+            "status": meta.status,
+            "runtime": meta.duration if mtype == "电影" else None,
+            "episode_run_time": episode_run_time,
+            "number_of_episodes": meta.episodes or 0,
+            "number_of_seasons": 1 if mtype == "电视剧" else 0,
+            "season_info": season_info,
+            "production_companies": studios,
+        }
+
+    @staticmethod
     def _meta_year(meta: AnimeMetadata) -> str:
         if meta.season_year:
             return str(meta.season_year)
@@ -467,52 +532,6 @@ class HentaiMetaHub(_PluginBase):
     @staticmethod
     def _meta_media_type(meta: AnimeMetadata) -> str:
         return "movie" if (meta.format or "").upper() == "MOVIE" else "tv"
-
-    def _resolve_tmdb_id(self, meta: AnimeMetadata, *, media_type: str, year: str = "") -> Optional[int]:
-        """尽量把 AniList 元数据映射到真实 TMDB ID，避免详情页拿 id=0 二次查询。"""
-        try:
-            from app.chain.media import MediaChain
-            from app.core.metainfo import MetaInfo
-            from app.schemas.types import MediaType
-        except Exception as err:  # pragma: no cover
-            logger.debug("[HentaiMetaHub] MRC TMDB 映射模块不可用: %s", err)
-            return None
-
-        mtype = MediaType.MOVIE if media_type == "movie" else MediaType.TV
-        candidates = [
-            meta.title_cn,
-            meta.title,
-            meta.title_en,
-            meta.title_romaji,
-            meta.title_native,
-            *(meta.synonyms or []),
-        ]
-        seen = set()
-        chain = MediaChain()
-        for raw_title in candidates:
-            title = (raw_title or "").strip()
-            title_key = title.lower()
-            if not title or title_key in seen:
-                continue
-            seen.add(title_key)
-            try:
-                meta_info = MetaInfo(title)
-                if year:
-                    meta_info.year = str(year)
-                meta_info.type = mtype
-                mediainfo = chain.recognize_media(meta=meta_info, mtype=mtype)
-            except Exception as err:  # pragma: no cover
-                logger.debug("[HentaiMetaHub] MRC TMDB 映射尝试失败 title=%r: %s", title, err)
-                continue
-            tmdb_id = getattr(mediainfo, "tmdb_id", None) if mediainfo else None
-            try:
-                tmdb_id = int(tmdb_id)
-            except (TypeError, ValueError):
-                continue
-            if tmdb_id > 0:
-                logger.info("[HentaiMetaHub] MRC TMDB 映射成功 title=%r tmdb_id=%s", title, tmdb_id)
-                return tmdb_id
-        return None
 
     @eventmanager.register(ChainEventType.DiscoverSource)
     def discover_source(self, event: Event):
@@ -653,9 +672,6 @@ class HentaiMetaHub(_PluginBase):
         )
         if not event_data or not mediaid:
             return
-        if convert_type and convert_type not in ("themoviedb", "tmdb", ""):
-            logger.debug("[HentaiMetaHub] MRC 跳过：convert_type=%r 非 tmdb", convert_type)
-            return
         if not mediaid.startswith("anilist:"):
             return
         source_id = mediaid.split(":", 1)[1]
@@ -685,31 +701,12 @@ class HentaiMetaHub(_PluginBase):
         media_type = self._meta_media_type(meta)
         logger.info("[HentaiMetaHub] MRC 命中 id=%s title=%r year=%s type=%s",
                     source_id, title, year, media_type)
-        tmdb_id = self._resolve_tmdb_id(meta, media_type=media_type, year=year)
-        if not tmdb_id:
-            logger.warning(
-                "[HentaiMetaHub] MRC 未找到 TMDB 映射 id=%s title=%r，返回空 media_dict 交给标题兜底，避免 TMDB id=0 详情页错误",
-                source_id, title,
-            )
-            event_data.media_dict = {}
-            return
-        event_data.media_dict = {
-            "id": tmdb_id,
-            "name": title,
-            "title": title,
-            "original_title": meta.title_native or title,
-            "original_name": meta.title_native or title,
-            "overview": meta.description or "",
-            "poster_path": meta.cover,
-            "backdrop_path": meta.banner or meta.cover,
-            "first_air_date": meta.start_date,
-            "release_date": meta.start_date,
-            "vote_average": meta.rating,
-            "genres": [{"id": i, "name": g} for i, g in enumerate(meta.genres)],
-            "media_type": media_type,
-            "year": year,
-            "number_of_episodes": meta.episodes,
-        }
+        event_data.convert_type = "custom"
+        event_data.media_dict = self._to_detail_media_dict(
+            meta,
+            mediaid_prefix="anilist",
+            media_id=source_id,
+        )
 
     # ===== NameRecognize =====
 

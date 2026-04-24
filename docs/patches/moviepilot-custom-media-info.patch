@@ -1,0 +1,45 @@
+diff --git a/app/api/endpoints/media.py b/app/api/endpoints/media.py
+index 69fbc1b..b1a6bbb 100644
+--- a/app/api/endpoints/media.py
++++ b/app/api/endpoints/media.py
+@@ -249,6 +249,12 @@ async def detail(mediaid: str, type_name: str, title: Optional[str] = None, year
+         # 使用事件返回的上下文数据
+         if event and event.event_data and event.event_data.media_dict:
+             event_data: MediaRecognizeConvertEventData = event.event_data
++            media_dict = dict(event_data.media_dict)
++            if media_dict.get("_custom_media_info") or (
++                    media_dict.get("mediaid_prefix") and media_dict.get("media_id")
++            ):
++                media_dict.pop("_custom_media_info", None)
++                return schemas.MediaInfo(**media_dict)
+             new_id = event_data.media_dict.get("id")
+             if event_data.convert_type == "themoviedb":
+                 mediainfo = await mediachain.async_recognize_media(tmdbid=new_id, mtype=mtype)
+diff --git a/app/schemas/event.py b/app/schemas/event.py
+index fb0592a..e89d01a 100644
+--- a/app/schemas/event.py
++++ b/app/schemas/event.py
+@@ -429,19 +429,19 @@ class MediaRecognizeConvertEventData(ChainEventData):
+     Attributes:
+         # 输入参数
+         mediaid (str): 媒体ID，格式为`前缀:ID值`，如 tmdb:12345、douban:1234567
+-        convert_type (str): 转换类型 仅支持：themoviedb/douban，需要转换为对应的媒体数据并返回
++        convert_type (str): 转换类型，支持 themoviedb/douban/custom。custom 可直接返回 MediaInfo 结构
+ 
+         # 输出参数
+-        media_dict (dict): TheMovieDb/豆瓣的媒体数据
++        media_dict (dict): TheMovieDb/豆瓣的媒体数据，或 custom 类型的完整 MediaInfo 数据
+     """
+ 
+     # 输入参数
+     mediaid: str = Field(..., description="媒体ID")
+-    convert_type: str = Field(..., description="转换类型（themoviedb/douban）")
++    convert_type: str = Field(..., description="转换类型（themoviedb/douban/custom）")
+ 
+     # 输出参数
+     media_dict: dict = Field(
+-        default_factory=dict, description="转换后的媒体信息（TheMovieDb/豆瓣）"
++        default_factory=dict, description="转换后的媒体信息（TheMovieDb/豆瓣/自定义MediaInfo）"
+     )
+ 
+ 

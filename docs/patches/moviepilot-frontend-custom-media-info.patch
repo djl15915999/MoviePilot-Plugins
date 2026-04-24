@@ -1,0 +1,126 @@
+diff --git a/src/views/discover/MediaCardListView.vue b/src/views/discover/MediaCardListView.vue
+index 56a1fd6..b1e2f08 100644
+--- a/src/views/discover/MediaCardListView.vue
++++ b/src/views/discover/MediaCardListView.vue
+@@ -148,7 +148,11 @@ async function fetchData({ done }: { done: any }) {
+     <template #loading />
+     <template #empty />
+     <div v-if="dataList.length > 0" class="grid gap-4 grid-media-card" tabindex="0">
+-      <MediaCard v-for="data in dataList" :key="data.tmdb_id || data.douban_id" :media="data" />
++      <MediaCard
++        v-for="data in dataList"
++        :key="data.tmdb_id || data.douban_id || data.bangumi_id || `${data.mediaid_prefix}:${data.media_id}`"
++        :media="data"
++      />
+     </div>
+     <NoDataFound
+       v-if="dataList.length === 0 && isRefreshed"
+diff --git a/src/views/discover/MediaDetailView.vue b/src/views/discover/MediaDetailView.vue
+index 89be951..619a4c3 100644
+--- a/src/views/discover/MediaDetailView.vue
++++ b/src/views/discover/MediaDetailView.vue
+@@ -90,6 +90,18 @@ const isTransparentTheme = computed(() => {
+   return theme.name.value === 'transparent'
+ })
+ 
++const hasBuiltinMediaId = computed(() => {
++  return !!(mediaDetail.value.tmdb_id || mediaDetail.value.douban_id || mediaDetail.value.bangumi_id)
++})
++
++const hasCustomMediaId = computed(() => {
++  return !!(mediaDetail.value.mediaid_prefix && mediaDetail.value.media_id)
++})
++
++const hasMediaInfo = computed(() => {
++  return hasBuiltinMediaId.value || hasCustomMediaId.value
++})
++
+ // 查询所有站点
+ async function querySites() {
+   try {
+@@ -132,7 +144,8 @@ async function getMediaDetail() {
+       },
+     })
+     isRefreshed.value = true
+-    if (!mediaDetail.value.tmdb_id && !mediaDetail.value.douban_id && !mediaDetail.value.bangumi_id) return
++    if (!hasMediaInfo.value) return
++    if (!hasBuiltinMediaId.value) return
+ 
+     // 检查存在状态
+     checkExists()
+@@ -274,6 +287,7 @@ async function addSubscribe(season: number | null) {
+       tmdbid: mediaDetail.value?.tmdb_id,
+       doubanid: mediaDetail.value?.douban_id,
+       bangumiid: mediaDetail.value?.bangumi_id,
++      mediaid: mediaDetail.value?.media_id ? `${mediaDetail.value?.mediaid_prefix}:${mediaDetail.value?.media_id}` : '',
+       season: mediaDetail.value?.type === '电影' ? null : season,
+       best_version,
+     })
+@@ -568,7 +582,7 @@ onBeforeMount(() => {
+ <template>
+   <LoadingBanner v-if="!isRefreshed" class="mt-12" />
+   <div
+-    v-if="mediaDetail.tmdb_id || mediaDetail.douban_id || mediaDetail.bangumi_id"
++    v-if="hasMediaInfo"
+     class="max-w-8xl mx-auto px-4"
+     :class="{ 'media-detail-transparent': isTransparentTheme }"
+   >
+@@ -738,6 +752,19 @@ onBeforeMount(() => {
+                 <span class="ms-1">Bangumi</span>
+               </div>
+             </a>
++            <a
++              v-if="hasCustomMediaId && mediaDetail.detail_link"
++              class="mb-2 mr-2 inline-flex last:mr-0"
++              :href="mediaDetail.detail_link"
++              target="_blank"
++            >
++              <div
++                class="inline-flex cursor-pointer items-center rounded-full bg-gray-600 px-2 py-1 text-sm text-gray-200 ring-1 ring-gray-500 transition hover:bg-gray-700"
++              >
++                <VIcon icon="mdi-link" />
++                <span class="ms-1">{{ mediaDetail.source || mediaDetail.mediaid_prefix }}</span>
++              </div>
++            </a>
+           </div>
+           <h2 v-if="mediaDetail.type === '电视剧' && mediaDetail.tmdb_id" class="py-4">{{ t('media.seasons') }}</h2>
+           <div v-if="mediaDetail.type === '电视剧' && mediaDetail.tmdb_id" class="flex w-full flex-col space-y-2">
+@@ -951,6 +978,29 @@ onBeforeMount(() => {
+             </div>
+           </div>
+         </div>
++        <div v-else-if="hasCustomMediaId" class="media-overview-right">
++          <div class="media-facts">
++            <div v-if="mediaDetail.vote_average" class="media-ratings">
++              <VRating v-model="mediaDetail.vote_average" density="compact" length="10" class="ma-2" readonly />
++            </div>
++            <div class="media-fact">
++              <span>{{ mediaDetail.mediaid_prefix || 'ID' }}</span>
++              <span class="media-fact-value">{{ mediaDetail.media_id }}</span>
++            </div>
++            <div v-if="mediaDetail.original_title || mediaDetail.original_name" class="media-fact">
++              <span>{{ t('media.info.originalTitle') }}</span>
++              <span class="media-fact-value">{{ mediaDetail.original_title || mediaDetail.original_name }}</span>
++            </div>
++            <div v-if="mediaDetail.release_date || mediaDetail.first_air_date" class="media-fact">
++              <span>{{ t('media.info.releaseDate') }}</span>
++              <span class="media-fact-value">{{ mediaDetail.release_date || mediaDetail.first_air_date }}</span>
++            </div>
++            <div v-if="mediaDetail.number_of_episodes" class="media-fact border-b-0">
++              <span>{{ t('dashboard.episodes') }}</span>
++              <span class="media-fact-value">{{ mediaDetail.number_of_episodes }}</span>
++            </div>
++          </div>
++        </div>
+       </div>
+       <div v-if="mediaDetail.tmdb_id">
+         <PersonCardSlideView
+@@ -1015,7 +1065,7 @@ onBeforeMount(() => {
+     </div>
+   </div>
+   <NoDataFound
+-    v-if="!mediaDetail.tmdb_id && !mediaDetail.douban_id && !mediaDetail.bangumi_id && isRefreshed"
++    v-if="!hasMediaInfo && isRefreshed"
+     error-code="500"
+     :error-title="t('media.error.title')"
+     :error-description="t('media.error.noMediaInfo')"
