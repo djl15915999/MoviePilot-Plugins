@@ -33,6 +33,47 @@ query ($search: String, $isAdult: Boolean, $perPage: Int) {
 }
 """
 
+DISCOVER_QUERY = """
+query (
+  $page: Int,
+  $perPage: Int,
+  $search: String,
+  $isAdult: Boolean,
+  $season: MediaSeason,
+  $seasonYear: Int,
+  $format: MediaFormat,
+  $genre: String,
+  $sort: [MediaSort]
+) {
+  Page(page: $page, perPage: $perPage) {
+    media(
+      type: ANIME,
+      search: $search,
+      isAdult: $isAdult,
+      season: $season,
+      seasonYear: $seasonYear,
+      format: $format,
+      genre: $genre,
+      sort: $sort
+    ) {
+      id
+      title { romaji english native }
+      description(asHtml: false)
+      coverImage { large extraLarge }
+      bannerImage
+      format
+      episodes
+      duration
+      averageScore
+      seasonYear
+      startDate { year month day }
+      isAdult
+      siteUrl
+    }
+  }
+}
+"""
+
 DETAIL_QUERY = """
 query ($id: Int) {
   Media(id: $id, type: ANIME) {
@@ -134,6 +175,84 @@ class AniListSource(AnimeSource):
                 )
             )
         return items
+
+    # ---- 探索 ----
+
+    def discover(
+        self,
+        *,
+        keyword: str = "",
+        year: Optional[int] = None,
+        season: Optional[str] = None,
+        mformat: Optional[str] = None,
+        genre: Optional[str] = None,
+        sort: str = "POPULARITY_DESC",
+        page: int = 1,
+        per_page: int = 30,
+        adult_only: bool = True,
+    ) -> List[AnimeMetadata]:
+        """探索页使用的按条件浏览。"""
+        variables: Dict[str, Any] = {
+            "page": max(page, 1),
+            "perPage": min(max(per_page, 1), 50),
+            "isAdult": True if adult_only else None,
+            "sort": [sort] if sort else ["POPULARITY_DESC"],
+        }
+        if keyword:
+            variables["search"] = keyword
+        if year:
+            try:
+                variables["seasonYear"] = int(year)
+            except (TypeError, ValueError):
+                pass
+        if season and season.upper() in {"WINTER", "SPRING", "SUMMER", "FALL"}:
+            variables["season"] = season.upper()
+        if mformat and mformat.upper() in {"TV", "TV_SHORT", "MOVIE", "SPECIAL", "OVA", "ONA", "MUSIC"}:
+            variables["format"] = mformat.upper()
+        if genre:
+            variables["genre"] = genre
+
+        payload = self._post(DISCOVER_QUERY, variables)
+        if not payload:
+            return []
+        media_list = (((payload.get("data") or {}).get("Page") or {}).get("media")) or []
+        return [self._to_metadata_from_discover(m) for m in media_list if m]
+
+    @staticmethod
+    def _to_metadata_from_discover(m: Dict[str, Any]) -> AnimeMetadata:
+        title = m.get("title") or {}
+        start = m.get("startDate") or {}
+        cover = (m.get("coverImage") or {}).get("extraLarge") or (m.get("coverImage") or {}).get("large")
+        rating = None
+        if m.get("averageScore") is not None:
+            try:
+                rating = float(m["averageScore"]) / 10.0
+            except (TypeError, ValueError):
+                rating = None
+        start_date = None
+        if start.get("year"):
+            start_date = f"{start['year']:04d}-{(start.get('month') or 1):02d}-{(start.get('day') or 1):02d}"
+        return AnimeMetadata(
+            source="anilist",
+            source_id=str(m.get("id")),
+            sources=["anilist"],
+            source_ids={"anilist": str(m.get("id"))},
+            title=title.get("romaji") or title.get("english") or title.get("native") or "",
+            title_en=title.get("english"),
+            title_romaji=title.get("romaji"),
+            title_native=title.get("native"),
+            format=m.get("format"),
+            episodes=m.get("episodes"),
+            duration=m.get("duration"),
+            start_date=start_date,
+            season_year=m.get("seasonYear"),
+            cover=cover,
+            banner=m.get("bannerImage"),
+            rating=rating,
+            is_adult=bool(m.get("isAdult", True)),
+            description=m.get("description"),
+            urls={"anilist": m.get("siteUrl")} if m.get("siteUrl") else {},
+        )
 
     # ---- 详情 ----
 

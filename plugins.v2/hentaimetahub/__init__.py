@@ -13,12 +13,29 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from app import schemas
-from app.core.config import settings
 from app.core.event import Event, eventmanager
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import DiscoverSourceEventData
 from app.schemas.types import ChainEventType, EventType
+
+try:
+    from app.schemas import MediaRecognizeConvertEventData  # noqa: F401
+except ImportError:
+    MediaRecognizeConvertEventData = None  # type: ignore[assignment]
+
+_MRC_EVENT = getattr(ChainEventType, "MediaRecognizeConvert", None)
+
+
+def _maybe_register(event_type):
+    """兼容旧版 MoviePilot：当事件类型不存在时跳过注册。"""
+
+    def decorator(fn):
+        if event_type is None:
+            return fn
+        return eventmanager.register(event_type)(fn)
+
+    return decorator
 
 from app.plugins.hentaimetahub.merger import AnimeMerger
 from app.plugins.hentaimetahub.models import AnimeMetadata
@@ -132,10 +149,10 @@ class HentaiMetaHub(_PluginBase):
                 "summary": "列出启用的数据源",
             },
             {
-                "path": "/anilist_discover",
+                "path": "/anilist-discover",
                 "endpoint": self.api_anilist_discover,
                 "methods": ["GET"],
-                "auth": "apikey",
+                "auth": "bear",
                 "summary": "AniList 成人向探索",
             },
         ]
@@ -382,35 +399,56 @@ class HentaiMetaHub(_PluginBase):
 
     def api_anilist_discover(
         self,
-        apikey: str,
         keyword: str = "",
+        year: str = "",
+        season: str = "",
+        mformat: str = "",
+        genre: str = "",
+        sort: str = "POPULARITY_DESC",
         page: int = 1,
         count: int = 30,
     ) -> List[schemas.MediaInfo]:
-        if apikey != settings.API_TOKEN:
-            return []
         if not self._enabled:
             return []
         source = AniListSource(self._anilist_cfg, proxy=self._proxy)
         if not source.is_available():
             return []
-        items = source.search(keyword or "", limit=50, adult_only=True)
-        media_list: List[schemas.MediaInfo] = []
-        for item in items:
-            media_list.append(
-                schemas.MediaInfo(
-                    type="电视剧",
-                    title=item.title,
-                    year=str(item.year) if item.year else None,
-                    title_year=f"{item.title} ({item.year or ''})".strip(),
-                    mediaid_prefix="anilist",
-                    media_id=item.source_id,
-                    poster_path=item.cover,
-                    backdrop_path=item.cover,
-                )
-            )
-        start = (page - 1) * count
-        return media_list[start: start + count]
+        metas = source.discover(
+            keyword=keyword or "",
+            year=int(year) if str(year).isdigit() else None,
+            season=season or None,
+            mformat=mformat or None,
+            genre=genre or None,
+            sort=sort or "POPULARITY_DESC",
+            page=max(int(page or 1), 1),
+            per_page=min(int(count or 30), 50),
+            adult_only=True,
+        )
+        return [self._to_media_info(m) for m in metas]
+
+    @staticmethod
+    def _to_media_info(meta: AnimeMetadata) -> schemas.MediaInfo:
+        year = None
+        if meta.season_year:
+            year = str(meta.season_year)
+        elif meta.start_date and meta.start_date[:4].isdigit():
+            year = meta.start_date[:4]
+        title = meta.title_cn or meta.title or meta.title_en or meta.title_romaji or meta.title_native or ""
+        mtype = "电影" if (meta.format or "").upper() == "MOVIE" else "电视剧"
+        return schemas.MediaInfo(
+            type=mtype,
+            title=title,
+            year=year,
+            title_year=f"{title} ({year})" if year else title,
+            mediaid_prefix="anilist",
+            media_id=meta.source_id,
+            poster_path=meta.cover,
+            backdrop_path=meta.banner or meta.cover,
+            vote_average=meta.rating,
+            release_date=meta.start_date,
+            overview=meta.description,
+            runtime=meta.duration,
+        )
 
     @eventmanager.register(ChainEventType.DiscoverSource)
     def discover_source(self, event: Event):
@@ -421,29 +459,168 @@ class HentaiMetaHub(_PluginBase):
             return
         event_data: DiscoverSourceEventData = event.event_data
         src = schemas.DiscoverMediaSource(
-            name="成人动画 (AniList)",
+            name="成人动画",
             mediaid_prefix="anilist",
-            api_path=f"plugin/HentaiMetaHub/anilist_discover?apikey={settings.API_TOKEN}",
-            filter_params={"keyword": ""},
-            filter_ui=[
-                {
-                    "component": "div",
-                    "props": {"class": "flex justify-start items-center"},
-                    "content": [
-                        {
-                            "component": "div",
-                            "props": {"class": "mr-5"},
-                            "content": [{"component": "VLabel", "text": "关键字"}],
-                        },
-                        {"component": "VTextField", "props": {"model": "keyword", "density": "compact"}},
-                    ],
-                }
-            ],
+            api_path="plugin/HentaiMetaHub/anilist-discover",
+            filter_params={
+                "keyword": "",
+                "year": None,
+                "season": None,
+                "mformat": None,
+                "genre": None,
+                "sort": "POPULARITY_DESC",
+            },
+            filter_ui=self._anilist_filter_ui(),
         )
         if not event_data.extra_sources:
             event_data.extra_sources = [src]
         else:
             event_data.extra_sources.append(src)
+
+    @staticmethod
+    def _anilist_filter_ui() -> List[dict]:
+        import datetime
+
+        sort_dict = {
+            "POPULARITY_DESC": "人气",
+            "SCORE_DESC": "评分",
+            "TRENDING_DESC": "趋势",
+            "START_DATE_DESC": "最新",
+            "FAVOURITES_DESC": "收藏",
+        }
+        format_dict = {
+            "TV": "TV",
+            "TV_SHORT": "TV短片",
+            "MOVIE": "剧场版",
+            "SPECIAL": "特别篇",
+            "OVA": "OVA",
+            "ONA": "ONA",
+        }
+        season_dict = {
+            "WINTER": "冬",
+            "SPRING": "春",
+            "SUMMER": "夏",
+            "FALL": "秋",
+        }
+        genre_dict = {
+            "Action": "动作",
+            "Adventure": "冒险",
+            "Comedy": "喜剧",
+            "Drama": "剧情",
+            "Ecchi": "Ecchi",
+            "Fantasy": "奇幻",
+            "Hentai": "Hentai",
+            "Horror": "恐怖",
+            "Mecha": "机甲",
+            "Music": "音乐",
+            "Mystery": "悬疑",
+            "Psychological": "心理",
+            "Romance": "爱情",
+            "Sci-Fi": "科幻",
+            "Slice of Life": "日常",
+            "Sports": "运动",
+            "Supernatural": "超自然",
+            "Thriller": "惊悚",
+        }
+        current_year = datetime.datetime.now().year
+        year_dict = {str(y): str(y) for y in range(current_year, current_year - 15, -1)}
+
+        def _chips(model: str, data: Dict[str, str]) -> dict:
+            return {
+                "component": "VChipGroup",
+                "props": {"model": model},
+                "content": [
+                    {
+                        "component": "VChip",
+                        "props": {"filter": True, "tile": True, "value": k},
+                        "text": v,
+                    }
+                    for k, v in data.items()
+                ],
+            }
+
+        def _row(label: str, child: dict) -> dict:
+            return {
+                "component": "div",
+                "props": {"class": "flex justify-start items-center mt-1"},
+                "content": [
+                    {
+                        "component": "div",
+                        "props": {"class": "mr-5"},
+                        "content": [{"component": "VLabel", "text": label}],
+                    },
+                    child,
+                ],
+            }
+
+        return [
+            _row("排序", _chips("sort", sort_dict)),
+            _row("类型", _chips("mformat", format_dict)),
+            _row("年份", _chips("year", year_dict)),
+            _row("季度", _chips("season", season_dict)),
+            _row("风格", _chips("genre", genre_dict)),
+            _row(
+                "关键字",
+                {
+                    "component": "VTextField",
+                    "props": {
+                        "model": "keyword",
+                        "density": "compact",
+                        "hide-details": True,
+                        "placeholder": "标题 / 别名",
+                    },
+                },
+            ),
+        ]
+
+    # ===== MediaRecognizeConvert =====
+
+    @_maybe_register(_MRC_EVENT)
+    def media_recognize_convert(self, event: Event):
+        """拦截 ``anilist:`` 前缀。"""
+        if not self._enabled:
+            return
+        event_data = event.event_data
+        mediaid = getattr(event_data, "mediaid", None)
+        if not event_data or not mediaid:
+            return
+        if getattr(event_data, "convert_type", None) != "themoviedb":
+            return
+        if not mediaid.startswith("anilist:"):
+            return
+        source_id = mediaid.split(":", 1)[1]
+        meta = None
+        if self._merger:
+            try:
+                meta = self._merger.fetch(
+                    source="anilist",
+                    source_id=source_id,
+                    strategy=self._strategy,
+                )
+            except Exception as err:  # pragma: no cover
+                logger.warning("[HentaiMetaHub] MediaRecognizeConvert 抓取异常: %s", err)
+        if not meta:
+            event_data.media_dict = {}
+            return
+        year = str(meta.season_year) if meta.season_year else (meta.start_date or "")[:4]
+        title = meta.title_cn or meta.title or meta.title_en or meta.title_romaji or ""
+        event_data.media_dict = {
+            "id": 0,
+            "name": title,
+            "title": title,
+            "original_title": meta.title_native or title,
+            "original_name": meta.title_native or title,
+            "overview": meta.description or "",
+            "poster_path": meta.cover,
+            "backdrop_path": meta.banner or meta.cover,
+            "first_air_date": meta.start_date,
+            "release_date": meta.start_date,
+            "vote_average": meta.rating,
+            "genres": [{"id": i, "name": g} for i, g in enumerate(meta.genres)],
+            "media_type": "movie" if (meta.format or "").upper() == "MOVIE" else "tv",
+            "year": year,
+            "number_of_episodes": meta.episodes,
+        }
 
     # ===== NameRecognize =====
 

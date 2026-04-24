@@ -15,15 +15,32 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from app import schemas
-from app.core.config import settings
 from app.core.event import Event, eventmanager
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import DiscoverSourceEventData
 from app.schemas.types import ChainEventType, EventType
 
+try:
+    from app.schemas import MediaRecognizeConvertEventData  # noqa: F401
+except ImportError:
+    MediaRecognizeConvertEventData = None  # type: ignore[assignment]
+
+_MRC_EVENT = getattr(ChainEventType, "MediaRecognizeConvert", None)
+
+
+def _maybe_register(event_type):
+    """兼容旧版 MoviePilot：当事件类型不存在时跳过注册，避免加载插件时报错。"""
+
+    def decorator(fn):
+        if event_type is None:
+            return fn
+        return eventmanager.register(event_type)(fn)
+
+    return decorator
+
 from app.plugins.javmetahub.merger import JavMerger
-from app.plugins.javmetahub.models import JavMetadata, JavSearchItem
+from app.plugins.javmetahub.models import JavMetadata
 from app.plugins.javmetahub.sources import JavSource, normalize_code
 from app.plugins.javmetahub.sources.fanza import FanzaSource
 from app.plugins.javmetahub.sources.javdb import JavDBSource
@@ -144,10 +161,10 @@ class JavMetaHub(_PluginBase):
                 "description": "返回每个数据源的启用状态与优先级。",
             },
             {
-                "path": "/fanza_discover",
+                "path": "/fanza-discover",
                 "endpoint": self.api_fanza_discover,
                 "methods": ["GET"],
-                "auth": "apikey",
+                "auth": "bear",
                 "summary": "FANZA 探索数据源",
                 "description": "供 MoviePilot 探索页调用的数据源接口。",
             },
@@ -417,42 +434,46 @@ class JavMetaHub(_PluginBase):
 
     def api_fanza_discover(
         self,
-        apikey: str,
         keyword: str = "",
         sort: str = "rank",
+        year: str = "",
         page: int = 1,
         count: int = 30,
     ) -> List[schemas.MediaInfo]:
-        """供探索页调用：按关键字搜索 FANZA 并转为 MediaInfo。"""
-        if apikey != settings.API_TOKEN:
-            return []
+        """供探索页调用：按过滤条件浏览 FANZA。"""
         if not self._enabled:
             return []
         source = FanzaSource(self._fanza_cfg, proxy=self._proxy)
         if not source.is_available():
             return []
-        items = source._request(keyword=keyword or "", sort=sort, hits=min(max(count, 1), 100))
-        media_list: List[schemas.MediaInfo] = []
-        for item in items:
-            meta = source._to_metadata(item, normalize_code(item.get("content_id") or item.get("product_id") or ""))
-            media_list.append(self._to_media_info(meta))
-        start = (page - 1) * count
-        return media_list[start: start + count]
+        metas = source.discover(
+            keyword=keyword or "",
+            sort=sort or "rank",
+            year=year or None,
+            page=max(int(page or 1), 1),
+            count=int(count or 30),
+        )
+        return [self._to_media_info(m) for m in metas]
 
     @staticmethod
     def _to_media_info(meta: JavMetadata) -> schemas.MediaInfo:
+        year = (meta.release_date or "")[:4] or None
+        title = meta.title or meta.code
+        overview = meta.description
+        if not overview and meta.actors:
+            overview = "出演：" + "、".join(a.name for a in meta.actors[:8])
         return schemas.MediaInfo(
             type="电影",
-            title=meta.title or meta.code,
-            year=(meta.release_date or "")[:4] or None,
-            title_year=f"{meta.title or meta.code} ({(meta.release_date or '')[:4] or ''})".strip(),
+            title=title,
+            year=year,
+            title_year=f"{title} ({year})" if year else title,
             mediaid_prefix="jav",
             media_id=meta.code,
             poster_path=meta.cover,
             backdrop_path=meta.cover,
             vote_average=meta.rating,
             release_date=meta.release_date,
-            overview=meta.description or "; ".join(a.name for a in meta.actors[:8]),
+            overview=overview,
             runtime=meta.duration,
         )
 
@@ -465,44 +486,154 @@ class JavMetaHub(_PluginBase):
             return
         event_data: DiscoverSourceEventData = event.event_data
         src = schemas.DiscoverMediaSource(
-            name="FANZA (JAV)",
+            name="FANZA",
             mediaid_prefix="jav",
-            api_path=f"plugin/JavMetaHub/fanza_discover?apikey={settings.API_TOKEN}",
+            api_path="plugin/JavMetaHub/fanza-discover",
             filter_params={
                 "keyword": "",
                 "sort": "rank",
+                "year": None,
             },
-            filter_ui=[
-                {
-                    "component": "div",
-                    "props": {"class": "flex justify-start items-center"},
-                    "content": [
-                        {"component": "div", "props": {"class": "mr-5"}, "content": [{"component": "VLabel", "text": "排序"}]},
-                        {
-                            "component": "VChipGroup",
-                            "props": {"model": "sort"},
-                            "content": [
-                                {"component": "VChip", "props": {"filter": True, "tile": True, "value": "rank"}, "text": "人气"},
-                                {"component": "VChip", "props": {"filter": True, "tile": True, "value": "date"}, "text": "发行日期"},
-                                {"component": "VChip", "props": {"filter": True, "tile": True, "value": "review"}, "text": "评分"},
-                            ],
-                        },
-                    ],
-                },
-                {
-                    "component": "div",
-                    "props": {"class": "flex justify-start items-center mt-2"},
-                    "content": [
-                        {"component": "div", "props": {"class": "mr-5"}, "content": [{"component": "VLabel", "text": "关键字"}]},
-                        {"component": "VTextField", "props": {"model": "keyword", "density": "compact"}},
-                    ],
-                },
-            ],
+            filter_ui=self._fanza_filter_ui(),
         )
         if not event_data.extra_sources:
             event_data.extra_sources = [src]
         else:
             event_data.extra_sources.append(src)
+
+    @staticmethod
+    def _fanza_filter_ui() -> List[dict]:
+        """FANZA 探索页过滤器 UI。"""
+        import datetime
+
+        sort_dict = {
+            "rank": "人气",
+            "date": "新作",
+            "review": "评分",
+            "price": "价格",
+            "match": "相关度",
+        }
+        sort_ui = [
+            {
+                "component": "VChip",
+                "props": {"filter": True, "tile": True, "value": k},
+                "text": v,
+            }
+            for k, v in sort_dict.items()
+        ]
+
+        current_year = datetime.datetime.now().year
+        year_dict = {str(y): str(y) for y in range(current_year, current_year - 15, -1)}
+        year_dict.update({
+            "2010": "2010s",
+            "2000": "2000s",
+            "1990": "1990s",
+        })
+        year_ui = [
+            {
+                "component": "VChip",
+                "props": {"filter": True, "tile": True, "value": k},
+                "text": v,
+            }
+            for k, v in year_dict.items()
+        ]
+
+        return [
+            {
+                "component": "div",
+                "props": {"class": "flex justify-start items-center"},
+                "content": [
+                    {
+                        "component": "div",
+                        "props": {"class": "mr-5"},
+                        "content": [{"component": "VLabel", "text": "排序"}],
+                    },
+                    {
+                        "component": "VChipGroup",
+                        "props": {"model": "sort"},
+                        "content": sort_ui,
+                    },
+                ],
+            },
+            {
+                "component": "div",
+                "props": {"class": "flex justify-start items-center mt-1"},
+                "content": [
+                    {
+                        "component": "div",
+                        "props": {"class": "mr-5"},
+                        "content": [{"component": "VLabel", "text": "年份"}],
+                    },
+                    {
+                        "component": "VChipGroup",
+                        "props": {"model": "year"},
+                        "content": year_ui,
+                    },
+                ],
+            },
+            {
+                "component": "div",
+                "props": {"class": "flex justify-start items-center mt-1"},
+                "content": [
+                    {
+                        "component": "div",
+                        "props": {"class": "mr-5"},
+                        "content": [{"component": "VLabel", "text": "关键字"}],
+                    },
+                    {
+                        "component": "VTextField",
+                        "props": {
+                            "model": "keyword",
+                            "density": "compact",
+                            "hide-details": True,
+                            "placeholder": "番号/演员/厂商",
+                        },
+                    },
+                ],
+            },
+        ]
+
+    # ===== MediaRecognizeConvert =====
+
+    @_maybe_register(_MRC_EVENT)
+    def media_recognize_convert(self, event: Event):
+        """拦截 ``jav:`` 前缀，防止主程序走 TMDB/豆瓣识别导致 500。
+
+        MoviePilot 会在用户点击探索卡片后派发该事件以把自定义数据源的 ID
+        转成 themoviedb / douban 的数据结构。对于 JAV 元数据没法转换，
+        所以我们把 media_dict 填上最少必要字段，让前端能安全渲染。
+        """
+        if not self._enabled:
+            return
+        event_data = event.event_data
+        mediaid = getattr(event_data, "mediaid", None)
+        if not event_data or not mediaid:
+            return
+        if getattr(event_data, "convert_type", None) != "themoviedb":
+            return
+        if not mediaid.startswith("jav:"):
+            return
+        code = mediaid.split(":", 1)[1]
+        meta = self._merger.fetch(code, strategy=self._strategy) if self._merger else None
+        if not meta:
+            # 未命中时返回空 dict，避免主程序继续识别
+            event_data.media_dict = {}
+            return
+        year = (meta.release_date or "")[:4]
+        event_data.media_dict = {
+            "id": 0,
+            "title": meta.title or meta.code,
+            "original_title": meta.title_original or meta.title or meta.code,
+            "overview": meta.description or "",
+            "poster_path": meta.cover,
+            "backdrop_path": meta.cover,
+            "release_date": meta.release_date,
+            "vote_average": meta.rating,
+            "genres": [{"id": i, "name": g} for i, g in enumerate(meta.genres)],
+            "runtime": meta.duration,
+            "media_type": "movie",
+            "year": year,
+        }
 
     # ===== NameRecognize =====
 

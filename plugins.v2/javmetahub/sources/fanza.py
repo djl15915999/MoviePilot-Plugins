@@ -74,6 +74,7 @@ class FanzaSource(JavSource):
             "floor": self.floor,
             "output": "json",
             "hits": 20,
+            "offset": 1,
             "sort": "rank",
         }
         query.update({k: v for k, v in params.items() if v not in (None, "")})
@@ -125,6 +126,44 @@ class FanzaSource(JavSource):
                 )
             )
         return out
+
+    # ---- 探索 ----
+
+    def discover(
+        self,
+        *,
+        keyword: str = "",
+        sort: str = "rank",
+        year: Optional[str] = None,
+        page: int = 1,
+        count: int = 30,
+    ) -> List["JavMetadata"]:
+        """按过滤条件浏览；为探索页分页使用。
+
+        FANZA API 使用 ``offset`` 作为 1-based 起始序号，``hits`` 为每次数量。
+        """
+        hits = min(max(count, 1), 100)
+        offset = max((page - 1) * hits + 1, 1)
+
+        extra: Dict[str, Any] = {
+            "sort": sort or "rank",
+            "hits": hits,
+            "offset": offset,
+        }
+        if keyword:
+            extra["keyword"] = keyword
+        if year and str(year).isdigit():
+            extra["gte_date"] = f"{int(year):04d}-01-01T00:00:00"
+            extra["lte_date"] = f"{int(year):04d}-12-31T23:59:59"
+
+        items = self._request(**extra)
+        metas: List[JavMetadata] = []
+        for item in items:
+            code = normalize_code(item.get("content_id") or item.get("product_id") or "")
+            if not code:
+                continue
+            metas.append(self._to_metadata(item, code))
+        return metas
 
     # ---- 详情 ----
 
