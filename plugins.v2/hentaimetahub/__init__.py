@@ -1,0 +1,495 @@
+"""
+HentaiMetaHub - 成人动画（里番）元数据多源聚合插件。
+
+能力：
+1. 对外暴露 Hub API：``/search``、``/fetch``、``/sources``；
+2. 通过 ``ChainEventType.DiscoverSource`` 在探索页新增"里番" 数据源（基于 AniList isAdult 过滤）；
+3. 通过 ``EventType.NameRecognize`` 在主程序识别失败时，按标题命中数据源。
+
+只聚合元数据（标题、封面、集数、标签、简介等），不涉及任何资源下载。
+"""
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Tuple
+
+from app import schemas
+from app.core.config import settings
+from app.core.event import Event, eventmanager
+from app.log import logger
+from app.plugins import _PluginBase
+from app.schemas import DiscoverSourceEventData
+from app.schemas.types import ChainEventType, EventType
+
+from app.plugins.hentaimetahub.merger import AnimeMerger
+from app.plugins.hentaimetahub.models import AnimeMetadata
+from app.plugins.hentaimetahub.sources import AnimeSource
+from app.plugins.hentaimetahub.sources.anidb import AniDBSource
+from app.plugins.hentaimetahub.sources.anilist import AniListSource
+from app.plugins.hentaimetahub.sources.bangumi import BangumiSource
+
+
+class HentaiMetaHub(_PluginBase):
+    # 插件名称
+    plugin_name = "成人动画元数据聚合"
+    # 插件描述
+    plugin_desc = "聚合 AniDB / AniList / Bangumi 的成人动画（里番）元数据，只提供标题/封面/标签等元信息，不涉及下载。"
+    # 插件图标
+    plugin_icon = "Moviepilot_A.png"
+    # 插件版本
+    plugin_version = "1.0.0"
+    # 插件作者
+    plugin_author = "dong"
+    # 作者主页
+    author_url = "https://github.com/dong"
+    # 插件配置项ID前缀
+    plugin_config_prefix = "hentaimetahub_"
+    # 加载顺序
+    plugin_order = 96
+    # 可使用的用户级别
+    auth_level = 1
+
+    _enabled: bool = False
+    _proxy: bool = False
+    _as_discover_source: bool = False
+    _as_recognize: bool = False
+    _strategy: str = "merge"
+
+    _anidb_cfg: Dict[str, Any] = {}
+    _anilist_cfg: Dict[str, Any] = {}
+    _bangumi_cfg: Dict[str, Any] = {}
+
+    _merger: Optional[AnimeMerger] = None
+
+    def init_plugin(self, config: dict = None):
+        config = config or {}
+        self._enabled = bool(config.get("enabled"))
+        self._proxy = bool(config.get("proxy"))
+        self._as_discover_source = bool(config.get("as_discover_source", True))
+        self._as_recognize = bool(config.get("as_recognize", False))
+        self._strategy = str(config.get("strategy", "merge")) or "merge"
+
+        titles_default = str(self.get_data_path() / "anidb-titles.xml")
+        self._anidb_cfg = {
+            "enabled": bool(config.get("anidb_enabled", False)),
+            "priority": int(config.get("anidb_priority", 10) or 10),
+            "client": config.get("anidb_client", ""),
+            "clientver": config.get("anidb_clientver", "1"),
+            "protover": config.get("anidb_protover", "1"),
+            "rate_limit_seconds": float(config.get("anidb_rate_limit", 2.2) or 2.2),
+            "titles_cache_path": config.get("anidb_titles_path") or titles_default,
+        }
+        self._anilist_cfg = {
+            "enabled": bool(config.get("anilist_enabled", True)),
+            "priority": int(config.get("anilist_priority", 20) or 20),
+            "token": config.get("anilist_token", ""),
+        }
+        self._bangumi_cfg = {
+            "enabled": bool(config.get("bangumi_enabled", False)),
+            "priority": int(config.get("bangumi_priority", 30) or 30),
+            "token": config.get("bangumi_token", ""),
+            "user_agent": config.get("bangumi_ua", ""),
+        }
+
+        self._merger = self._build_merger()
+
+    def _build_merger(self) -> AnimeMerger:
+        sources: List[AnimeSource] = [
+            AniDBSource(self._anidb_cfg, proxy=self._proxy),
+            AniListSource(self._anilist_cfg, proxy=self._proxy),
+            BangumiSource(self._bangumi_cfg, proxy=self._proxy),
+        ]
+        return AnimeMerger(sources)
+
+    def get_state(self) -> bool:
+        return self._enabled
+
+    @staticmethod
+    def get_command() -> List[Dict[str, Any]]:
+        return []
+
+    def get_api(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "path": "/search",
+                "endpoint": self.api_search,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "搜索成人动画元数据",
+                "description": "跨源搜索成人动画条目。",
+            },
+            {
+                "path": "/fetch",
+                "endpoint": self.api_fetch,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "抓取详情并跨源合并",
+            },
+            {
+                "path": "/sources",
+                "endpoint": self.api_sources,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "列出启用的数据源",
+            },
+            {
+                "path": "/anilist_discover",
+                "endpoint": self.api_anilist_discover,
+                "methods": ["GET"],
+                "auth": "apikey",
+                "summary": "AniList 成人向探索",
+            },
+        ]
+
+    # ===== 配置表单 =====
+
+    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        form = [
+            {
+                "component": "VForm",
+                "content": [
+                    {
+                        "component": "VRow",
+                        "content": [
+                            self._col({"model": "enabled", "label": "启用插件"}, comp="VSwitch"),
+                            self._col({"model": "proxy", "label": "使用代理服务器"}, comp="VSwitch"),
+                            self._col({"model": "as_discover_source", "label": "注入到探索页"}, comp="VSwitch"),
+                            self._col({"model": "as_recognize", "label": "辅助名称识别"}, comp="VSwitch"),
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            self._col(
+                                {
+                                    "model": "strategy",
+                                    "label": "详情抓取策略",
+                                    "items": [
+                                        {"title": "多源合并 (merge)", "value": "merge"},
+                                        {"title": "仅主源 (first)", "value": "first"},
+                                    ],
+                                },
+                                comp="VSelect",
+                                cols=12,
+                                md=6,
+                            ),
+                        ],
+                    },
+                    # ---- AniDB ----
+                    self._section_title("AniDB（推荐主源，需注册 Client，HTTP API 速率限制严格）"),
+                    {
+                        "component": "VRow",
+                        "content": [
+                            self._col({"model": "anidb_enabled", "label": "启用 AniDB"}, comp="VSwitch"),
+                            self._col({"model": "anidb_priority", "label": "优先级", "type": "number"}, cols=12, md=2),
+                            self._col({"model": "anidb_client", "label": "Client 名"}, cols=12, md=3),
+                            self._col({"model": "anidb_clientver", "label": "Clientver"}, cols=12, md=2),
+                            self._col({"model": "anidb_rate_limit", "label": "最小间隔(秒)", "type": "number"}, cols=12, md=2),
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            self._col(
+                                {
+                                    "model": "anidb_titles_path",
+                                    "label": "anime-titles.xml 缓存路径 (留空使用插件数据目录)",
+                                }
+                            ),
+                        ],
+                    },
+                    # ---- AniList ----
+                    self._section_title("AniList（推荐次源，GraphQL，免鉴权可用）"),
+                    {
+                        "component": "VRow",
+                        "content": [
+                            self._col({"model": "anilist_enabled", "label": "启用 AniList"}, comp="VSwitch"),
+                            self._col({"model": "anilist_priority", "label": "优先级", "type": "number"}, cols=12, md=2),
+                            self._col({"model": "anilist_token", "label": "Token (可选)"}, cols=12, md=7),
+                        ],
+                    },
+                    # ---- Bangumi ----
+                    self._section_title("Bangumi 番组计划（补充中文信息，免鉴权可用）"),
+                    {
+                        "component": "VRow",
+                        "content": [
+                            self._col({"model": "bangumi_enabled", "label": "启用 Bangumi"}, comp="VSwitch"),
+                            self._col({"model": "bangumi_priority", "label": "优先级", "type": "number"}, cols=12, md=2),
+                            self._col({"model": "bangumi_token", "label": "Access Token (可选)"}, cols=12, md=7),
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            self._col({"model": "bangumi_ua", "label": "User-Agent (推荐自定义成项目名)"}),
+                        ],
+                    },
+                    {
+                        "component": "VAlert",
+                        "props": {
+                            "type": "warning",
+                            "variant": "tonal",
+                            "class": "mt-3",
+                            "text": "本插件仅聚合元数据，不提供资源下载。"
+                            "AniDB 请严格遵守 API 速率限制，Bangumi 请设置友好的 User-Agent。",
+                        },
+                    },
+                ],
+            }
+        ]
+        defaults = {
+            "enabled": False,
+            "proxy": False,
+            "as_discover_source": False,
+            "as_recognize": False,
+            "strategy": "merge",
+            "anidb_enabled": False,
+            "anidb_priority": 10,
+            "anidb_client": "",
+            "anidb_clientver": "1",
+            "anidb_protover": "1",
+            "anidb_rate_limit": 2.2,
+            "anidb_titles_path": "",
+            "anilist_enabled": True,
+            "anilist_priority": 20,
+            "anilist_token": "",
+            "bangumi_enabled": False,
+            "bangumi_priority": 30,
+            "bangumi_token": "",
+            "bangumi_ua": "MoviePilot-HentaiMetaHub/1.0",
+        }
+        return form, defaults
+
+    @staticmethod
+    def _col(props: Dict[str, Any], *, comp: str = "VTextField", cols: int = 12, md: int = 3) -> dict:
+        return {
+            "component": "VCol",
+            "props": {"cols": cols, "md": md},
+            "content": [{"component": comp, "props": props}],
+        }
+
+    @staticmethod
+    def _section_title(text: str) -> dict:
+        return {
+            "component": "VAlert",
+            "props": {
+                "type": "info",
+                "density": "compact",
+                "variant": "tonal",
+                "text": text,
+                "class": "mt-2",
+            },
+        }
+
+    # ===== 详情页 =====
+
+    def get_page(self) -> List[dict]:
+        sources_info = []
+        for s in self._instantiate_sources():
+            sources_info.append(
+                {
+                    "component": "VListItem",
+                    "props": {"title": f"{s.label} (优先级 {s.priority})"},
+                    "content": [
+                        {
+                            "component": "VListItemSubtitle",
+                            "text": "可用" if s.is_available() else "未启用 / 配置不完整",
+                        }
+                    ],
+                }
+            )
+        return [
+            {
+                "component": "VCard",
+                "props": {"class": "ma-2"},
+                "content": [
+                    {
+                        "component": "VCardTitle",
+                        "text": "HentaiMetaHub - 数据源状态",
+                    },
+                    {
+                        "component": "VList",
+                        "props": {"density": "comfortable"},
+                        "content": sources_info,
+                    },
+                    {
+                        "component": "VCardText",
+                        "content": [
+                            {
+                                "component": "div",
+                                "props": {"class": "text-caption"},
+                                "text": (
+                                    "Hub API：\n"
+                                    "  GET /api/v1/plugin/HentaiMetaHub/search?keyword=xxx\n"
+                                    "  GET /api/v1/plugin/HentaiMetaHub/fetch?source=anilist&source_id=123\n"
+                                    "  GET /api/v1/plugin/HentaiMetaHub/sources"
+                                ),
+                            }
+                        ],
+                    },
+                ],
+            }
+        ]
+
+    def _instantiate_sources(self) -> List[AnimeSource]:
+        return [
+            AniDBSource(self._anidb_cfg, proxy=self._proxy),
+            AniListSource(self._anilist_cfg, proxy=self._proxy),
+            BangumiSource(self._bangumi_cfg, proxy=self._proxy),
+        ]
+
+    # ===== Hub API =====
+
+    def api_search(self, keyword: str = "", limit: int = 20, adult_only: bool = True) -> Dict[str, Any]:
+        if not self._enabled or not self._merger:
+            return {"success": False, "message": "插件未启用", "data": []}
+        items = self._merger.search(keyword, limit=limit, adult_only=bool(adult_only))
+        return {"success": True, "total": len(items), "data": [i.dict() for i in items]}
+
+    def api_fetch(
+        self,
+        source: str = "",
+        source_id: str = "",
+        keyword: str = "",
+        strategy: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self._enabled or not self._merger:
+            return {"success": False, "message": "插件未启用", "data": None}
+        meta = self._merger.fetch(
+            source=source,
+            source_id=source_id,
+            keyword_fallback=keyword or None,
+            strategy=strategy or self._strategy,
+        )
+        if not meta:
+            return {"success": False, "message": "未找到元数据", "data": None}
+        return {"success": True, "data": meta.dict()}
+
+    def api_sources(self) -> Dict[str, Any]:
+        data = []
+        for s in self._instantiate_sources():
+            data.append(
+                {
+                    "name": s.name,
+                    "label": s.label,
+                    "priority": s.priority,
+                    "enabled": s.enabled,
+                    "available": s.is_available(),
+                }
+            )
+        return {"success": True, "data": data}
+
+    # ===== DiscoverSource =====
+
+    def api_anilist_discover(
+        self,
+        apikey: str,
+        keyword: str = "",
+        page: int = 1,
+        count: int = 30,
+    ) -> List[schemas.MediaInfo]:
+        if apikey != settings.API_TOKEN:
+            return []
+        if not self._enabled:
+            return []
+        source = AniListSource(self._anilist_cfg, proxy=self._proxy)
+        if not source.is_available():
+            return []
+        items = source.search(keyword or "", limit=50, adult_only=True)
+        media_list: List[schemas.MediaInfo] = []
+        for item in items:
+            media_list.append(
+                schemas.MediaInfo(
+                    type="电视剧",
+                    title=item.title,
+                    year=str(item.year) if item.year else None,
+                    title_year=f"{item.title} ({item.year or ''})".strip(),
+                    mediaid_prefix="anilist",
+                    media_id=item.source_id,
+                    poster_path=item.cover,
+                    backdrop_path=item.cover,
+                )
+            )
+        start = (page - 1) * count
+        return media_list[start: start + count]
+
+    @eventmanager.register(ChainEventType.DiscoverSource)
+    def discover_source(self, event: Event):
+        if not self._enabled or not self._as_discover_source:
+            return
+        source = AniListSource(self._anilist_cfg, proxy=self._proxy)
+        if not source.is_available():
+            return
+        event_data: DiscoverSourceEventData = event.event_data
+        src = schemas.DiscoverMediaSource(
+            name="成人动画 (AniList)",
+            mediaid_prefix="anilist",
+            api_path=f"plugin/HentaiMetaHub/anilist_discover?apikey={settings.API_TOKEN}",
+            filter_params={"keyword": ""},
+            filter_ui=[
+                {
+                    "component": "div",
+                    "props": {"class": "flex justify-start items-center"},
+                    "content": [
+                        {
+                            "component": "div",
+                            "props": {"class": "mr-5"},
+                            "content": [{"component": "VLabel", "text": "关键字"}],
+                        },
+                        {"component": "VTextField", "props": {"model": "keyword", "density": "compact"}},
+                    ],
+                }
+            ],
+        )
+        if not event_data.extra_sources:
+            event_data.extra_sources = [src]
+        else:
+            event_data.extra_sources.append(src)
+
+    # ===== NameRecognize =====
+
+    @eventmanager.register(EventType.NameRecognize)
+    def name_recognize(self, event: Event):
+        if not self._enabled or not self._as_recognize:
+            return
+        title = (event.event_data or {}).get("title") or ""
+        if not title or not self._merger:
+            self._send_empty(title)
+            return
+        items = self._merger.search(title, limit=1, adult_only=True)
+        if not items:
+            self._send_empty(title)
+            return
+        item = items[0]
+        meta: Optional[AnimeMetadata] = None
+        try:
+            meta = self._merger.fetch(
+                source=item.source,
+                source_id=item.source_id,
+                keyword_fallback=title,
+                strategy="first",
+            )
+        except Exception as err:  # pragma: no cover
+            logger.warning("[HentaiMetaHub] 识别抓取异常: %s", err)
+        if not meta or not (meta.title or meta.title_cn):
+            self._send_empty(title)
+            return
+        from app.core.event import eventmanager as em
+        logger.info("[HentaiMetaHub] 识别命中 %s -> %s", title, meta.title_cn or meta.title)
+        em.send_event(
+            EventType.NameRecognizeResult,
+            {
+                "title": title,
+                "name": meta.title_cn or meta.title,
+                "year": str(meta.season_year) if meta.season_year else (meta.start_date or "")[:4],
+                "season": 0,
+                "episode": 0,
+            },
+        )
+
+    @staticmethod
+    def _send_empty(title: str) -> None:
+        from app.core.event import eventmanager as em
+        em.send_event(EventType.NameRecognizeResult, {"title": title})
+
+    def stop_service(self):
+        self._merger = None
