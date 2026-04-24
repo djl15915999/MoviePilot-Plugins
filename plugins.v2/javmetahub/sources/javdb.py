@@ -77,13 +77,45 @@ class JavDBSource(JavSource):
         keyword = (keyword or "").strip()
         if not keyword:
             return []
+        html = self._get("search", q=keyword, f="all")
+        if not html:
+            return []
+        return self._parse_list(html, limit=limit)
+
+    # ---- 探索 ----
+
+    def discover(
+        self,
+        *,
+        keyword: str = "",
+        sort: str = "date",
+        year: Optional[str] = None,
+        page: int = 1,
+        count: int = 30,
+    ) -> List[JavMetadata]:
+        """浏览 JavDB 列表页；没有官方 API，按页面 DOM 尽量解析。"""
+        keyword = (keyword or "").strip()
+        if keyword:
+            return self._items_to_metadata(self.search(keyword, limit=count))
+
+        page = max(int(page or 1), 1)
+        count = min(max(int(count or 30), 1), 100)
+        path = "rankings" if sort in ("rank", "review") else ""
+        html = self._get(path, page=page)
+        if not html:
+            return []
+        items = self._parse_list(html, limit=count)
+        if year and str(year).isdigit():
+            filtered = [item for item in items if (item.release_date or "").startswith(str(year))]
+            if filtered:
+                items = filtered
+        return self._items_to_metadata(items)
+
+    def _parse_list(self, html: str, *, limit: int = 20) -> List[JavSearchItem]:
         try:
             from bs4 import BeautifulSoup
         except ImportError:  # pragma: no cover
             logger.error("[JavDBSource] 缺少 beautifulsoup4 依赖")
-            return []
-        html = self._get("search", q=keyword, f="all")
-        if not html:
             return []
         soup = BeautifulSoup(html, "lxml")
         items: List[JavSearchItem] = []
@@ -102,6 +134,10 @@ class JavDBSource(JavSource):
             cover = None
             if cover_node:
                 cover = cover_node.get("data-src") or cover_node.get("src")
+            if cover and cover.startswith("//"):
+                cover = "https:" + cover
+            elif cover and cover.startswith("/"):
+                cover = urljoin(self.base_url + "/", cover.lstrip("/"))
             date_node = node.select_one(".meta")
             release_date = date_node.get_text(strip=True) if date_node else None
             items.append(
@@ -115,6 +151,25 @@ class JavDBSource(JavSource):
                 )
             )
         return items
+
+    def _items_to_metadata(self, items: List[JavSearchItem]) -> List[JavMetadata]:
+        metas: List[JavMetadata] = []
+        for item in items:
+            if not item.code:
+                continue
+            metas.append(
+                JavMetadata(
+                    code=item.code,
+                    source=self.name,
+                    sources=[self.name],
+                    title=item.title or item.code,
+                    release_date=item.release_date,
+                    cover=item.cover,
+                    poster=item.cover,
+                    urls={self.name: item.url} if item.url else {},
+                )
+            )
+        return metas
 
     # ---- 详情 ----
 

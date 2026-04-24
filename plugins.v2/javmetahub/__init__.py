@@ -61,7 +61,7 @@ class JavMetaHub(_PluginBase):
     # 插件图标
     plugin_icon = "Moviepilot_A.png"
     # 插件版本
-    plugin_version = "1.0.5"
+    plugin_version = "1.0.6"
     # 插件作者
     plugin_author = "dong"
     # 作者主页
@@ -106,7 +106,7 @@ class JavMetaHub(_PluginBase):
             "floor": config.get("fanza_floor", FanzaSource.DEFAULT_FLOOR),
         }
         self._javlib_cfg = {
-            "enabled": bool(config.get("javlib_enabled", False)),
+            "enabled": bool(config.get("javlib_enabled", True)),
             "priority": int(config.get("javlib_priority", 30) or 30),
             "base_url": config.get("javlib_base_url", JavLibrarySource.DEFAULT_BASE),
             "lang": config.get("javlib_lang", JavLibrarySource.DEFAULT_LANG),
@@ -114,7 +114,7 @@ class JavMetaHub(_PluginBase):
             "user_agent": config.get("javlib_user_agent", ""),
         }
         self._javdb_cfg = {
-            "enabled": bool(config.get("javdb_enabled", False)),
+            "enabled": bool(config.get("javdb_enabled", True)),
             "priority": int(config.get("javdb_priority", 40) or 40),
             "base_url": config.get("javdb_base_url", JavDBSource.DEFAULT_BASE),
             "cookie": config.get("javdb_cookie", ""),
@@ -124,22 +124,34 @@ class JavMetaHub(_PluginBase):
         self._merger = self._build_merger()
 
     def _migrate_discover_config(self, config: Dict[str, Any]) -> None:
-        """把旧版本保存下来的探索页默认关闭配置迁移为开启。"""
-        if not config or config.get("discover_source_migrated_v105"):
+        """迁移旧版本保存下来的探索页与 fallback 默认配置。"""
+        if not config:
             return
         changed = False
-        if config.get("as_discover_source") is not True:
-            config["as_discover_source"] = True
+        if not config.get("discover_source_migrated_v105"):
+            if config.get("as_discover_source") is not True:
+                config["as_discover_source"] = True
+                changed = True
+            if config.get("fanza_enabled") is not True:
+                config["fanza_enabled"] = True
+                changed = True
+            config["discover_source_migrated_v105"] = True
             changed = True
-        if config.get("fanza_enabled") is not True:
-            config["fanza_enabled"] = True
+        if not config.get("discover_fallback_migrated_v106"):
+            fanza_ready = bool(config.get("fanza_api_id")) and bool(config.get("fanza_affiliate_id"))
+            if config.get("as_discover_source", True) and not fanza_ready:
+                if config.get("javdb_enabled") is not True:
+                    config["javdb_enabled"] = True
+                    changed = True
+                if config.get("javlib_enabled") is not True:
+                    config["javlib_enabled"] = True
+                    changed = True
+            config["discover_fallback_migrated_v106"] = True
             changed = True
-        config["discover_source_migrated_v105"] = True
-        changed = True
         if changed:
             try:
                 self.update_config(config=config)
-                logger.info("[JavMetaHub] 已自动迁移旧配置：开启探索页注入与 FANZA 数据源")
+                logger.info("[JavMetaHub] 已自动迁移旧配置：开启探索页与无凭证 fallback 源")
             except Exception as err:  # pragma: no cover
                 logger.warning("[JavMetaHub] 迁移探索页配置失败: %s", err)
 
@@ -190,7 +202,23 @@ class JavMetaHub(_PluginBase):
                 "methods": ["GET"],
                 "auth": "bear",
                 "summary": "FANZA 探索数据源",
-                "description": "供 MoviePilot 探索页调用的数据源接口。",
+                "description": "供 MoviePilot 探索页调用的数据源接口；FANZA 不可用时会尝试 fallback 源。",
+            },
+            {
+                "path": "/javdb-discover",
+                "endpoint": self.api_javdb_discover,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "JavDB 探索数据源",
+                "description": "供 MoviePilot 探索页调用的 JavDB 列表接口。",
+            },
+            {
+                "path": "/javlibrary-discover",
+                "endpoint": self.api_javlibrary_discover,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "JavLibrary 探索数据源",
+                "description": "供 MoviePilot 探索页调用的 JavLibrary 列表接口。",
             },
         ]
 
@@ -315,6 +343,7 @@ class JavMetaHub(_PluginBase):
             "proxy": False,
             "as_discover_source": True,
             "discover_source_migrated_v105": True,
+            "discover_fallback_migrated_v106": True,
             "as_recognize": False,
             "strategy": "merge",
             "fanza_enabled": True,
@@ -324,13 +353,13 @@ class JavMetaHub(_PluginBase):
             "fanza_site": FanzaSource.DEFAULT_SITE,
             "fanza_service": FanzaSource.DEFAULT_SERVICE,
             "fanza_floor": FanzaSource.DEFAULT_FLOOR,
-            "javlib_enabled": False,
+            "javlib_enabled": True,
             "javlib_priority": 30,
             "javlib_base_url": JavLibrarySource.DEFAULT_BASE,
             "javlib_lang": JavLibrarySource.DEFAULT_LANG,
             "javlib_cookie": "",
             "javlib_user_agent": "",
-            "javdb_enabled": False,
+            "javdb_enabled": True,
             "javdb_priority": 40,
             "javdb_base_url": JavDBSource.DEFAULT_BASE,
             "javdb_cookie": "",
@@ -469,15 +498,117 @@ class JavMetaHub(_PluginBase):
         if not self._enabled:
             return []
         source = FanzaSource(self._fanza_cfg, proxy=self._proxy)
-        if not source.is_available():
-            return []
-        metas = source.discover(
+        if source.is_available():
+            metas = source.discover(
+                keyword=keyword or "",
+                sort=sort or "rank",
+                year=year or None,
+                page=max(int(page or 1), 1),
+                count=int(count or 30),
+            )
+            return [self._to_media_info(m) for m in metas]
+        logger.warning("[JavMetaHub] FANZA 探索不可用，尝试使用 fallback 源")
+        return self._fallback_discover(
             keyword=keyword or "",
             sort=sort or "rank",
             year=year or None,
             page=max(int(page or 1), 1),
             count=int(count or 30),
         )
+
+    def api_javdb_discover(
+        self,
+        keyword: str = "",
+        sort: str = "date",
+        year: str = "",
+        page: int = 1,
+        count: int = 30,
+    ) -> List[schemas.MediaInfo]:
+        """供探索页调用：按过滤条件浏览 JavDB。"""
+        source = JavDBSource(self._javdb_cfg, proxy=self._proxy)
+        return self._source_discover(
+            source,
+            keyword=keyword,
+            sort=sort,
+            year=year,
+            page=page,
+            count=count,
+        )
+
+    def api_javlibrary_discover(
+        self,
+        keyword: str = "",
+        sort: str = "date",
+        year: str = "",
+        page: int = 1,
+        count: int = 30,
+    ) -> List[schemas.MediaInfo]:
+        """供探索页调用：按过滤条件浏览 JavLibrary。"""
+        source = JavLibrarySource(self._javlib_cfg, proxy=self._proxy)
+        return self._source_discover(
+            source,
+            keyword=keyword,
+            sort=sort,
+            year=year,
+            page=page,
+            count=count,
+        )
+
+    def _fallback_discover(
+        self,
+        *,
+        keyword: str = "",
+        sort: str = "date",
+        year: Optional[str] = None,
+        page: int = 1,
+        count: int = 30,
+    ) -> List[schemas.MediaInfo]:
+        sources = sorted(
+            [
+                JavLibrarySource(self._javlib_cfg, proxy=self._proxy),
+                JavDBSource(self._javdb_cfg, proxy=self._proxy),
+            ],
+            key=lambda s: s.priority,
+        )
+        for source in sources:
+            results = self._source_discover(
+                source,
+                keyword=keyword,
+                sort=sort,
+                year=year or "",
+                page=page,
+                count=count,
+            )
+            if results:
+                return results
+        return []
+
+    def _source_discover(
+        self,
+        source: JavSource,
+        *,
+        keyword: str = "",
+        sort: str = "date",
+        year: str = "",
+        page: int = 1,
+        count: int = 30,
+    ) -> List[schemas.MediaInfo]:
+        if not self._enabled or not source.is_available():
+            return []
+        discover = getattr(source, "discover", None)
+        if not callable(discover):
+            return []
+        try:
+            metas = discover(
+                keyword=keyword or "",
+                sort=sort or "date",
+                year=year or None,
+                page=max(int(page or 1), 1),
+                count=int(count or 30),
+            )
+        except Exception as err:  # pragma: no cover
+            logger.warning("[JavMetaHub] %s 探索异常: %s", source.name, err)
+            return []
         return [self._to_media_info(m) for m in metas]
 
     @staticmethod
@@ -510,46 +641,92 @@ class JavMetaHub(_PluginBase):
                 self._enabled, self._as_discover_source,
             )
             return
-        source = FanzaSource(self._fanza_cfg, proxy=self._proxy)
-        if not source.enabled:
-            logger.debug("[JavMetaHub] DiscoverSource 跳过：FANZA 数据源未启用")
-            return
-        if not source.is_available():
+        fanza_source = FanzaSource(self._fanza_cfg, proxy=self._proxy)
+        if fanza_source.enabled and not fanza_source.is_available():
             logger.warning(
-                "[JavMetaHub] FANZA 未配置完整（api_id/affiliate_id），探索页 tab 仍注入但结果将为空，请在插件设置里补齐。"
+                "[JavMetaHub] FANZA 未配置完整（api_id/affiliate_id），FANZA tab 将使用 fallback 源尝试返回列表。"
             )
         event_data: DiscoverSourceEventData = event.event_data
         if not event_data:
             logger.debug("[JavMetaHub] DiscoverSource 跳过：event_data 为空")
             return
-        src = schemas.DiscoverMediaSource(
-            name="FANZA",
-            mediaid_prefix="jav",
-            api_path="plugin/JavMetaHub/fanza-discover",
-            filter_params={
-                "keyword": "",
-                "sort": "rank",
-                "year": None,
-            },
-            filter_ui=self._fanza_filter_ui(),
-        )
+        sources = []
+        if fanza_source.enabled:
+            sources.append(
+                schemas.DiscoverMediaSource(
+                    name="FANZA",
+                    mediaid_prefix="jav",
+                    api_path="plugin/JavMetaHub/fanza-discover",
+                    filter_params={
+                        "keyword": "",
+                        "sort": "rank",
+                        "year": None,
+                    },
+                    filter_ui=self._discover_filter_ui(
+                        {
+                            "rank": "人气",
+                            "date": "新作",
+                            "review": "评分",
+                            "price": "价格",
+                            "match": "相关度",
+                        }
+                    ),
+                )
+            )
+        if JavDBSource(self._javdb_cfg, proxy=self._proxy).enabled:
+            sources.append(
+                schemas.DiscoverMediaSource(
+                    name="JavDB",
+                    mediaid_prefix="jav",
+                    api_path="plugin/JavMetaHub/javdb-discover",
+                    filter_params={
+                        "keyword": "",
+                        "sort": "date",
+                        "year": None,
+                    },
+                    filter_ui=self._discover_filter_ui(
+                        {
+                            "date": "新作",
+                            "rank": "人气",
+                            "review": "评分",
+                            "match": "相关度",
+                        }
+                    ),
+                )
+            )
+        if JavLibrarySource(self._javlib_cfg, proxy=self._proxy).enabled:
+            sources.append(
+                schemas.DiscoverMediaSource(
+                    name="JavLibrary",
+                    mediaid_prefix="jav",
+                    api_path="plugin/JavMetaHub/javlibrary-discover",
+                    filter_params={
+                        "keyword": "",
+                        "sort": "date",
+                        "year": None,
+                    },
+                    filter_ui=self._discover_filter_ui(
+                        {
+                            "date": "新作",
+                            "rank": "评分",
+                            "review": "评分",
+                            "match": "相关度",
+                        }
+                    ),
+                )
+            )
+        if not sources:
+            logger.debug("[JavMetaHub] DiscoverSource 跳过：没有启用的探索源")
+            return
         if not event_data.extra_sources:
-            event_data.extra_sources = [src]
+            event_data.extra_sources = sources
         else:
-            event_data.extra_sources.append(src)
+            event_data.extra_sources.extend(sources)
 
     @staticmethod
-    def _fanza_filter_ui() -> List[dict]:
-        """FANZA 探索页过滤器 UI。"""
+    def _discover_filter_ui(sort_dict: Dict[str, str]) -> List[dict]:
+        """探索页过滤器 UI。"""
         import datetime
-
-        sort_dict = {
-            "rank": "人气",
-            "date": "新作",
-            "review": "评分",
-            "price": "价格",
-            "match": "相关度",
-        }
         sort_ui = [
             {
                 "component": "VChip",

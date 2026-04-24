@@ -665,11 +665,12 @@
     "name": "JAV 元数据聚合",
     "description": "聚合 FANZA/DMM、JavLibrary、JavDB 的 JAV 元数据（标题/封面/演员/标签/评分等），不涉及任何资源下载。",
     "labels": "元数据,数据源",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "icon": "Moviepilot_A.png",
     "author": "dong",
     "level": 1,
     "history": {
+      "v1.0.6": "探索页增加 JavDB / JavLibrary 多源列表；FANZA 未配置 API 凭证时自动尝试 fallback 源，避免列表为空",
       "v1.0.5": "修复探索页不出现 FANZA tab 的问题：自动迁移旧配置开启探索页注入，不再因凭证未配置而跳过数据源注入",
       "v1.0.4": "MRC 处理增加抓取过程日志（可用源、命中/为空），方便定位识别失败原因",
       "v1.0.3": "放宽 MediaRecognizeConvert 的 convert_type 过滤（兼容 tmdb/空值），增加事件入口日志便于排障",

@@ -105,6 +105,45 @@ class JavLibrarySource(JavSource):
                     )
                 ]
             return []
+        return self._parse_list(html, limit=limit)
+
+    # ---- 探索 ----
+
+    def discover(
+        self,
+        *,
+        keyword: str = "",
+        sort: str = "date",
+        year: Optional[str] = None,
+        page: int = 1,
+        count: int = 30,
+    ) -> List[JavMetadata]:
+        """浏览 JavLibrary 列表页；受 Cloudflare 影响时会返回空列表。"""
+        keyword = (keyword or "").strip()
+        if keyword:
+            return self._items_to_metadata(self.search(keyword, limit=count))
+
+        page = max(int(page or 1), 1)
+        count = min(max(int(count or 30), 1), 100)
+        path = "vl_bestrated.php" if sort in ("rank", "review") else "vl_newrelease.php"
+        params = {"page": page} if page > 1 else {}
+        html = self._get(self._lang_path(path), **params)
+        if not html:
+            return []
+        items = self._parse_list(html, limit=count)
+        if year and str(year).isdigit():
+            filtered = [item for item in items if (item.release_date or "").startswith(str(year))]
+            if filtered:
+                items = filtered
+        return self._items_to_metadata(items)
+
+    def _parse_list(self, html: str, *, limit: int = 20) -> List[JavSearchItem]:
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:  # pragma: no cover
+            logger.error("[JavLibrarySource] 缺少 beautifulsoup4 依赖")
+            return []
+        soup = BeautifulSoup(html, "lxml")
         items: List[JavSearchItem] = []
         for node in soup.select(".videothumblist .video")[:limit]:
             a = node.select_one("a")
@@ -118,6 +157,8 @@ class JavLibrarySource(JavSource):
             cover = cover_node.get("src") if cover_node else None
             if cover and cover.startswith("//"):
                 cover = "https:" + cover
+            elif cover and cover.startswith("/"):
+                cover = urljoin(self.base_url + "/", cover.lstrip("/"))
             items.append(
                 JavSearchItem(
                     source=self.name,
@@ -128,6 +169,25 @@ class JavLibrarySource(JavSource):
                 )
             )
         return items
+
+    def _items_to_metadata(self, items: List[JavSearchItem]) -> List[JavMetadata]:
+        metas: List[JavMetadata] = []
+        for item in items:
+            if not item.code:
+                continue
+            metas.append(
+                JavMetadata(
+                    code=item.code,
+                    source=self.name,
+                    sources=[self.name],
+                    title=item.title or item.code,
+                    release_date=item.release_date,
+                    cover=item.cover,
+                    poster=item.cover,
+                    urls={self.name: item.url} if item.url else {},
+                )
+            )
+        return metas
 
     # ---- 详情 ----
 

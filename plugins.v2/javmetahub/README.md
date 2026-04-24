@@ -30,7 +30,9 @@ DMM 官方文档：<https://affiliate.dmm.com/api/>
 | GET | `/api/v1/plugin/JavMetaHub/search?keyword=xxx` | 多源搜索 |
 | GET | `/api/v1/plugin/JavMetaHub/fetch?code=ABP-123` | 按番号聚合抓取详情 |
 | GET | `/api/v1/plugin/JavMetaHub/sources` | 列出数据源状态 |
-| GET | `/api/v1/plugin/JavMetaHub/fanza_discover?apikey=...` | 探索页内部使用 |
+| GET | `/api/v1/plugin/JavMetaHub/fanza-discover` | FANZA 探索页内部使用，未配置凭证时尝试 fallback |
+| GET | `/api/v1/plugin/JavMetaHub/javdb-discover` | JavDB 探索页内部使用 |
+| GET | `/api/v1/plugin/JavMetaHub/javlibrary-discover` | JavLibrary 探索页内部使用 |
 
 `/fetch` 接受 `strategy=first|merge`：
 
@@ -39,7 +41,8 @@ DMM 官方文档：<https://affiliate.dmm.com/api/>
 
 ## 探索页集成
 
-在插件配置中打开 "注入到探索页"，MoviePilot 探索页会新增一个 **FANZA (JAV)** 标签页，可按关键字/排序方式浏览。
+在插件配置中打开 "注入到探索页"，MoviePilot 探索页会新增 **FANZA**、**JavDB**、**JavLibrary** 标签页。
+FANZA 未配置 API ID / Affiliate ID 时，FANZA 标签页会按优先级尝试使用 JavDB / JavLibrary 兜底返回列表。
 
 ## 名称识别增强
 
@@ -54,4 +57,5 @@ DMM 官方文档：<https://affiliate.dmm.com/api/>
 
 ## 更新日志
 
+- **v1.0.6** 探索页增加 JavDB / JavLibrary 多源列表；FANZA 未配置凭证时自动尝试 fallback 源。
 - **v1.0.0** 首版：FANZA/DMM 主源 + JavLibrary/JavDB fallback，Hub API，探索源，名称识别。
